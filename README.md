@@ -2,7 +2,13 @@
 
 MCP server exposing a stealth Playwright browser with human-like behaviour (ghost cursor, Gaussian typing, non-linear scroll, persistent profile).
 
-## Quick start
+Supports two transports:
+- **stdio** — for Claude Desktop / local use
+- **HTTP/SSE** — for claude.ai remote connectors (MCP 2025-03-26 streamable HTTP spec)
+
+---
+
+## Quick start (local, stdio)
 
 ```bash
 cd human-browser-mcp
@@ -12,7 +18,7 @@ npm run build
 node dist/index.js
 ```
 
-## Configuration – Claude Desktop
+## Configuration – Claude Desktop (stdio)
 
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -32,29 +38,19 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-## Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `HEADLESS` | `true` | Set to `false` to show the browser window |
-| `SLOW_MO` | `0` | Extra ms between Playwright actions |
-| `BROWSER_TIMEOUT` | `30000` | Default selector/navigation timeout |
-| `CAPSOLVER_API_KEY` | _(unset)_ | Enables `browser_solve_captcha` |
-
-## Docker
+### Via Docker (stdio)
 
 ```bash
-# Build (handles Chromium + all system libs automatically)
 docker build -t human-browser-mcp ./human-browser-mcp
 
-# Run — the -i flag is REQUIRED (MCP uses stdio)
+# -i is REQUIRED for MCP stdio
 docker run -i --rm \
   -v human-browser-profile:/app/profile \
-  -e HEADLESS=true \
+  -e MCP_TRANSPORT=stdio \
   human-browser-mcp
 ```
 
-### Claude Desktop via Docker
+Claude Desktop config (Docker variant):
 
 ```json
 {
@@ -64,8 +60,8 @@ docker run -i --rm \
       "args": [
         "run", "-i", "--rm",
         "-v", "human-browser-profile:/app/profile",
+        "-e", "MCP_TRANSPORT=stdio",
         "-e", "HEADLESS=true",
-        "-e", "BROWSER_TIMEOUT=30000",
         "human-browser-mcp"
       ]
     }
@@ -73,7 +69,58 @@ docker run -i --rm \
 }
 ```
 
-## Available tools
+---
+
+## HTTP/SSE mode — for claude.ai
+
+### Start with docker compose
+
+```bash
+# Set your auth token
+export MCP_AUTH_TOKEN=your-secret-token
+
+docker compose up -d
+```
+
+The server listens on `:3000`. Reverse-proxy it with nginx/Caddy to expose it at your domain (e.g. `https://browser.hobbitton.at/mcp`).
+
+### Configure claude.ai
+
+In claude.ai → Settings → Integrations → Add MCP server:
+- **URL**: `https://browser.hobbitton.at/mcp`
+- **Auth**: Bearer `your-secret-token`
+
+### Verify
+
+```bash
+# Health check (no auth needed)
+curl http://localhost:3000/health
+
+# Open SSE stream (auth required)
+curl -H "Authorization: Bearer your-secret-token" \
+     -H "Accept: text/event-stream" \
+     http://localhost:3000/mcp
+```
+
+The second command should open a persistent SSE connection and stay open.
+
+---
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
+| `MCP_PORT` | `3000` | HTTP listen port |
+| `MCP_AUTH_TOKEN` | _(empty)_ | Bearer token (required in HTTP mode) |
+| `HEADLESS` | `true` | Set to `false` to show the browser window |
+| `SLOW_MO` | `0` | Extra ms between Playwright actions |
+| `BROWSER_TIMEOUT` | `30000` | Default selector/navigation timeout |
+| `CAPSOLVER_API_KEY` | _(unset)_ | Enables `browser_solve_captcha` |
+
+---
+
+## Available tools (20)
 
 ### Navigation
 - `browser_navigate` – go to URL
@@ -100,6 +147,8 @@ docker run -i --rm \
 
 ### CapSolver (optional)
 - `browser_solve_captcha` – solve reCAPTCHA v2/v3, hCaptcha, Turnstile
+
+---
 
 ## Stealth features
 

@@ -23,6 +23,11 @@ VOLUME ["/app/profile"]
 ENV HEADLESS=true
 ENV SLOW_MO=0
 ENV BROWSER_TIMEOUT=30000
+ENV MCP_TRANSPORT=stdio
+ENV MCP_PORT=3000
+ENV MCP_AUTH_TOKEN=
 
-# MCP runs on stdio — start the server
+EXPOSE 3000
+
+# MCP runs on stdio by default; set MCP_TRANSPORT=http for HTTP/SSE mode
 CMD ["node", "dist/index.js"]

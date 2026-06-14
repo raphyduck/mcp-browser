@@ -1,9 +1,13 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import express, { Request, Response, NextFunction } from 'express';
+import cors from 'cors';
+import { randomUUID } from 'crypto';
 
 import {
   browserNavigate,
@@ -267,7 +271,7 @@ const TOOLS = [
       },
     },
   },
-] as const;
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Dispatch table
@@ -299,32 +303,143 @@ const ACTIONS: Record<string, ActionFn> = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Server bootstrap
+// MCP Server factory (one instance per HTTP session, shared singleton browser)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const server = new Server(
-  { name: 'human-browser', version: '1.0.0' },
-  { capabilities: { tools: {} } }
-);
+function createMCPServer(): Server {
+  const server = new Server(
+    { name: 'human-browser', version: '1.0.0' },
+    { capabilities: { tools: {} } }
+  );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-  const action = ACTIONS[name];
-  if (!action) {
-    return {
-      content: [{ type: 'text', text: `Unknown tool: ${name}` }],
-      isError: true,
-    };
-  }
-  return action(args ?? {});
-});
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+    const action = ACTIONS[name];
+    if (!action) {
+      return {
+        content: [{ type: 'text', text: `Unknown tool: ${name}` }],
+        isError: true,
+      };
+    }
+    return action(args ?? {});
+  });
 
-async function main() {
+  return server;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// stdio mode
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function startStdio(): Promise<void> {
+  const server = createMCPServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write('human-browser MCP server running on stdio\n');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP/SSE mode
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function startHttp(): Promise<void> {
+  const port = parseInt(process.env.MCP_PORT ?? '3000', 10);
+  const authToken = process.env.MCP_AUTH_TOKEN ?? '';
+
+  const app = express();
+
+  app.use(cors({
+    origin: true,
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Mcp-Session-Id', 'Accept', 'Cache-Control'],
+    exposedHeaders: ['Mcp-Session-Id'],
+    credentials: false,
+  }));
+
+  app.use(express.json());
+
+  // Bearer token auth (skipped if MCP_AUTH_TOKEN is empty)
+  const authenticate = (req: Request, res: Response, next: NextFunction): void => {
+    if (!authToken) {
+      next();
+      return;
+    }
+    const header = req.headers['authorization'];
+    if (!header || !header.startsWith('Bearer ') || header.slice(7) !== authToken) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    next();
+  };
+
+  // Session registry: sessionId → transport
+  const sessions = new Map<string, StreamableHTTPServerTransport>();
+
+  // ── Health check ────────────────────────────────────────────────────────────
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok', transport: 'http', sessions: sessions.size });
+  });
+
+  // ── MCP endpoint (GET + POST + DELETE) ─────────────────────────────────────
+  app.all('/mcp', authenticate, async (req: Request, res: Response) => {
+    try {
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+      // Reuse existing session
+      if (sessionId && sessions.has(sessionId)) {
+        const transport = sessions.get(sessionId)!;
+        await transport.handleRequest(req, res, req.body);
+        return;
+      }
+
+      // New session — only a POST (initialize) can create one
+      if (req.method !== 'POST') {
+        res.status(400).json({
+          error: 'No active session. Send a POST initialize request to /mcp first.',
+        });
+        return;
+      }
+
+      let storedId: string | null = null;
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (id) => {
+          storedId = id;
+          sessions.set(id, transport);
+          transport.onclose = () => {
+            if (storedId) sessions.delete(storedId);
+          };
+        },
+      });
+
+      const server = createMCPServer();
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      if (!res.headersSent) {
+        res.status(500).json({ error: String(err) });
+      }
+    }
+  });
+
+  app.listen(port, () => {
+    process.stderr.write(`human-browser MCP server running on HTTP :${port}/mcp\n`);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Entry point
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const mode = process.env.MCP_TRANSPORT ?? 'stdio';
+  if (mode === 'http') {
+    await startHttp();
+  } else {
+    await startStdio();
+  }
 }
 
 main().catch((err) => {
