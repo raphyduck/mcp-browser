@@ -7,7 +7,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes, createHash } from 'crypto';
 
 import {
   browserNavigate,
@@ -341,12 +341,38 @@ async function startStdio(): Promise<void> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// OAuth 2.0 in-memory stores
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface AuthCodeEntry {
+  clientId: string;
+  redirectUri: string;
+  codeChallenge: string;
+  expiresAt: number;
+}
+
+const authCodes = new Map<string, AuthCodeEntry>();
+const accessTokens = new Map<string, number>(); // token → expiresAt
+
+function generateToken(): string {
+  return randomBytes(32).toString('hex');
+}
+
+function verifyPKCE(codeVerifier: string, codeChallenge: string): boolean {
+  const hash = createHash('sha256').update(codeVerifier).digest();
+  return hash.toString('base64url') === codeChallenge;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HTTP/SSE mode
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function startHttp(): Promise<void> {
   const port = parseInt(process.env.MCP_PORT ?? '3000', 10);
-  const authToken = process.env.MCP_AUTH_TOKEN ?? '';
+  const staticToken = process.env.MCP_AUTH_TOKEN ?? '';
+  const oauthClientId = process.env.OAUTH_CLIENT_ID ?? '';
+  const oauthClientSecret = process.env.OAUTH_CLIENT_SECRET ?? '';
+  const issuer = process.env.OAUTH_ISSUER ?? `http://localhost:${port}`;
 
   const app = express();
 
@@ -360,22 +386,146 @@ async function startHttp(): Promise<void> {
 
   app.use(express.json());
 
-  // Bearer token auth (skipped if MCP_AUTH_TOKEN is empty)
+  // ── Auth middleware: accepts OAuth access tokens OR static MCP_AUTH_TOKEN ──
   const authenticate = (req: Request, res: Response, next: NextFunction): void => {
-    if (!authToken) {
+    const header = req.headers['authorization'];
+    if (!header || !header.startsWith('Bearer ')) {
+      res.status(401).json({ error: 'unauthorized', error_description: 'Bearer token required' });
+      return;
+    }
+    const token = header.slice(7);
+
+    // 1. Dynamic OAuth access token
+    const expiresAt = accessTokens.get(token);
+    if (expiresAt !== undefined) {
+      if (Date.now() > expiresAt) {
+        accessTokens.delete(token);
+        res.status(401).json({ error: 'invalid_token', error_description: 'Token expired' });
+        return;
+      }
       next();
       return;
     }
-    const header = req.headers['authorization'];
-    if (!header || !header.startsWith('Bearer ') || header.slice(7) !== authToken) {
-      res.status(401).json({ error: 'Unauthorized' });
+
+    // 2. Static fallback (MCP_AUTH_TOKEN, for Claude Desktop / curl testing)
+    if (staticToken && token === staticToken) {
+      next();
       return;
     }
-    next();
+
+    res.status(401).json({ error: 'invalid_token', error_description: 'Unknown or expired token' });
   };
 
   // Session registry: sessionId → transport
   const sessions = new Map<string, StreamableHTTPServerTransport>();
+
+  // ── OAuth discovery ─────────────────────────────────────────────────────────
+  app.get('/.well-known/oauth-authorization-server', (_req, res) => {
+    res.json({
+      issuer,
+      authorization_endpoint: `${issuer}/oauth/authorize`,
+      token_endpoint: `${issuer}/oauth/token`,
+      response_types_supported: ['code'],
+      code_challenge_methods_supported: ['S256'],
+      grant_types_supported: ['authorization_code'],
+      token_endpoint_auth_methods_supported: ['client_secret_post'],
+    });
+  });
+
+  // ── OAuth authorize ─────────────────────────────────────────────────────────
+  app.get('/oauth/authorize', (req, res) => {
+    const {
+      client_id,
+      redirect_uri,
+      state,
+      code_challenge,
+      code_challenge_method,
+      response_type,
+    } = req.query as Record<string, string>;
+
+    if (!oauthClientId) {
+      res.status(500).json({ error: 'server_error', error_description: 'OAuth not configured' });
+      return;
+    }
+    if (client_id !== oauthClientId) {
+      res.status(400).json({ error: 'invalid_client' });
+      return;
+    }
+    if (response_type !== 'code') {
+      res.status(400).json({ error: 'unsupported_response_type' });
+      return;
+    }
+    if (!redirect_uri || !code_challenge) {
+      res.status(400).json({ error: 'invalid_request', error_description: 'redirect_uri and code_challenge required' });
+      return;
+    }
+    if (code_challenge_method && code_challenge_method !== 'S256') {
+      res.status(400).json({ error: 'invalid_request', error_description: 'Only S256 PKCE is supported' });
+      return;
+    }
+
+    const code = generateToken();
+    authCodes.set(code, {
+      clientId: client_id,
+      redirectUri: redirect_uri,
+      codeChallenge: code_challenge,
+      expiresAt: Date.now() + 600_000, // 10 minutes
+    });
+
+    const callbackUrl = new URL(redirect_uri);
+    callbackUrl.searchParams.set('code', code);
+    if (state) callbackUrl.searchParams.set('state', state);
+
+    res.redirect(302, callbackUrl.toString());
+  });
+
+  // ── OAuth token exchange ────────────────────────────────────────────────────
+  app.post('/oauth/token', express.urlencoded({ extended: false }), (req, res) => {
+    const { grant_type, code, redirect_uri, client_id, client_secret, code_verifier } = req.body as Record<string, string>;
+
+    if (!oauthClientId || !oauthClientSecret) {
+      res.status(500).json({ error: 'server_error', error_description: 'OAuth not configured' });
+      return;
+    }
+    if (grant_type !== 'authorization_code') {
+      res.status(400).json({ error: 'unsupported_grant_type' });
+      return;
+    }
+    if (client_id !== oauthClientId || client_secret !== oauthClientSecret) {
+      res.status(401).json({ error: 'invalid_client' });
+      return;
+    }
+
+    const entry = authCodes.get(code);
+    if (!entry) {
+      res.status(400).json({ error: 'invalid_grant', error_description: 'Unknown or expired code' });
+      return;
+    }
+    if (Date.now() > entry.expiresAt) {
+      authCodes.delete(code);
+      res.status(400).json({ error: 'invalid_grant', error_description: 'Code expired' });
+      return;
+    }
+    if (entry.redirectUri !== redirect_uri) {
+      res.status(400).json({ error: 'invalid_grant', error_description: 'redirect_uri mismatch' });
+      return;
+    }
+    if (!code_verifier || !verifyPKCE(code_verifier, entry.codeChallenge)) {
+      res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
+      return;
+    }
+
+    authCodes.delete(code);
+
+    const accessToken = generateToken();
+    accessTokens.set(accessToken, Date.now() + 86_400_000); // 24 h
+
+    res.json({
+      access_token: accessToken,
+      token_type: 'Bearer',
+      expires_in: 86400,
+    });
+  });
 
   // ── Health check ────────────────────────────────────────────────────────────
   app.get('/health', (_req, res) => {
@@ -426,6 +576,7 @@ async function startHttp(): Promise<void> {
 
   app.listen(port, () => {
     process.stderr.write(`human-browser MCP server running on HTTP :${port}/mcp\n`);
+    process.stderr.write(`OAuth discovery: ${issuer}/.well-known/oauth-authorization-server\n`);
   });
 }
 
