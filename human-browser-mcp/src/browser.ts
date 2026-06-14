@@ -1,7 +1,8 @@
 import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import type { BrowserContext, Page } from 'playwright';
-import { createCursor, GhostCursor } from 'ghost-cursor-playwright';
+import { createCursor } from 'ghost-cursor-playwright';
+type GhostCursor = ReturnType<typeof createCursor>;
 import * as path from 'path';
 import * as fs from 'fs';
 

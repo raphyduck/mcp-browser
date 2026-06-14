@@ -44,11 +44,33 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ## Docker
 
 ```bash
+# Build (handles Chromium + all system libs automatically)
 docker build -t human-browser-mcp ./human-browser-mcp
+
+# Run — the -i flag is REQUIRED (MCP uses stdio)
 docker run -i --rm \
   -v human-browser-profile:/app/profile \
   -e HEADLESS=true \
   human-browser-mcp
+```
+
+### Claude Desktop via Docker
+
+```json
+{
+  "mcpServers": {
+    "human-browser": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-v", "human-browser-profile:/app/profile",
+        "-e", "HEADLESS=true",
+        "-e", "BROWSER_TIMEOUT=30000",
+        "human-browser-mcp"
+      ]
+    }
+  }
+}
 ```
 
 ## Available tools
