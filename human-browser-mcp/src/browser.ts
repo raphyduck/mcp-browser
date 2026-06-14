@@ -1,8 +1,7 @@
 import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import type { BrowserContext, Page } from 'playwright';
-import { createCursor } from 'ghost-cursor-playwright';
-type GhostCursor = ReturnType<typeof createCursor>;
+import { createCursor, Cursor } from 'ghost-cursor-playwright';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -13,7 +12,6 @@ const USER_AGENT =
 
 const INIT_SCRIPT = `
 (function () {
-  // WebGL vendor / renderer spoofing
   const getParameter = WebGLRenderingContext.prototype.getParameter;
   WebGLRenderingContext.prototype.getParameter = function (parameter) {
     if (parameter === 37445) return 'Intel Inc.';
@@ -26,13 +24,7 @@ const INIT_SCRIPT = `
     if (parameter === 37446) return 'Intel(R) Iris(TM) Plus Graphics 640';
     return getParameter2.call(this, parameter);
   };
-
-  // Navigator languages
-  Object.defineProperty(navigator, 'languages', {
-    get: () => ['fr-FR', 'fr', 'en-US', 'en'],
-  });
-
-  // Navigator plugins (simulate Chrome)
+  Object.defineProperty(navigator, 'languages', { get: () => ['fr-FR', 'fr', 'en-US', 'en'] });
   const fakePlugins = [
     { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
     { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
@@ -40,24 +32,14 @@ const INIT_SCRIPT = `
   ];
   Object.defineProperty(navigator, 'plugins', { get: () => fakePlugins });
   Object.defineProperty(navigator, 'mimeTypes', { get: () => [] });
-
-  // chrome runtime stub
   if (!window.chrome) {
     window.chrome = {
-      app: { isInstalled: false, InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }, RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' } },
-      runtime: {
-        OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
-        OnRestartRequiredReason: { APP_UPDATE: 'app_update', GC_PRESSURE: 'gc_pressure', OS_UPDATE: 'os_update' },
-        PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-        PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
-        RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' },
-      },
+      app: { isInstalled: false },
+      runtime: {},
       csi: () => {},
       loadTimes: () => {},
     };
   }
-
-  // hardware concurrency & device memory
   Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
   Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
   Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
@@ -68,7 +50,7 @@ class BrowserManager {
   private static instance: BrowserManager;
   private context: BrowserContext | null = null;
   private _page: Page | null = null;
-  private cursor: GhostCursor | null = null;
+  private cursor: Cursor | null = null;
 
   private constructor() {}
 
@@ -86,15 +68,14 @@ class BrowserManager {
     return this._page!;
   }
 
-  async getCursor(): Promise<GhostCursor> {
+  async getCursor(): Promise<Cursor> {
     const page = await this.getPage();
     if (!this.cursor) {
-      this.cursor = createCursor(page);
+      this.cursor = await createCursor(page);
     }
     return this.cursor;
   }
 
-  /** Call after navigation so cursor is re-attached to the (possibly new) page */
   resetCursor(): void {
     this.cursor = null;
   }
@@ -131,15 +112,11 @@ class BrowserManager {
       ],
     });
 
-    this.context.setDefaultTimeout(timeout);
+    this.context!.setDefaultTimeout(timeout);
+    await this.context!.addInitScript(INIT_SCRIPT);
 
-    // Inject stealth patches on every new page / frame
-    await this.context.addInitScript(INIT_SCRIPT);
-
-    const pages = this.context.pages();
-    this._page = pages.length > 0 ? pages[0] : await this.context.newPage();
-
-    // Re-create cursor when page is replaced
+    const pages = this.context!.pages();
+    this._page = pages.length > 0 ? pages[0] : await this.context!.newPage();
     this._page.on('framenavigated', () => this.resetCursor());
   }
 

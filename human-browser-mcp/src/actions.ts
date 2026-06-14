@@ -139,7 +139,7 @@ export async function browserClick(args: { selector: string; button?: string }) 
     await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
 
     const cursor = await browserManager.getCursor();
-    await cursor.click(args.selector);
+    (cursor.actions as any).click({ target: args.selector });
 
     await humanDelay();
     return { content: [{ type: 'text', text: `Clicked "${args.selector}"` }] };
@@ -152,7 +152,7 @@ export async function browserType(args: { selector: string; text: string; clearF
     await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
 
     const cursor = await browserManager.getCursor();
-    await cursor.click(args.selector);
+    (cursor.actions as any).click({ target: args.selector });
     await sleep(150 + Math.random() * 100);
 
     if (args.clearFirst) {
@@ -192,7 +192,7 @@ export async function browserHover(args: { selector: string }) {
     const page = await browserManager.getPage();
     await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
     const cursor = await browserManager.getCursor();
-    await cursor.move(args.selector);
+    (cursor.actions as any).move(args.selector);
     await humanDelay();
     return { content: [{ type: 'text', text: `Hovered over "${args.selector}"` }] };
   }).catch(makeErrorResponse);
@@ -289,7 +289,8 @@ export async function browserSolveCaptcha(args: { type?: string }) {
     let Capsolver: any;
     try {
       // Dynamic import so the whole server still works without the package
-      const mod = await import('@capsolver/capsolver-npm');
+      // @ts-ignore
+      const mod = await import("@capsolver/capsolver-npm");
       Capsolver = mod.default ?? mod.Capsolver;
     } catch {
       return { content: [{ type: 'text', text: '@capsolver/capsolver-npm is not installed' }] };
