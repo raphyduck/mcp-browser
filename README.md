@@ -4,7 +4,7 @@ MCP server exposing a stealth Playwright browser with human-like behaviour (ghos
 
 Supports two transports:
 - **stdio** — for Claude Desktop / local use
-- **HTTP/SSE** — for claude.ai remote connectors (MCP 2025-03-26 streamable HTTP spec)
+- **HTTP/SSE** — for claude.ai remote connectors (MCP 2025-03-26 + OAuth 2.0 PKCE)
 
 ---
 
@@ -30,8 +30,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
       "args": ["/absolute/path/to/human-browser-mcp/dist/index.js"],
       "env": {
         "HEADLESS": "true",
-        "BROWSER_TIMEOUT": "30000",
-        "CAPSOLVER_API_KEY": ""
+        "BROWSER_TIMEOUT": "30000"
       }
     }
   }
@@ -50,69 +49,85 @@ docker run -i --rm \
   human-browser-mcp
 ```
 
-Claude Desktop config (Docker variant):
-
-```json
-{
-  "mcpServers": {
-    "human-browser": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-v", "human-browser-profile:/app/profile",
-        "-e", "MCP_TRANSPORT=stdio",
-        "-e", "HEADLESS=true",
-        "human-browser-mcp"
-      ]
-    }
-  }
-}
-```
-
 ---
 
-## HTTP/SSE mode — for claude.ai
+## HTTP/SSE mode — for claude.ai (OAuth 2.0)
+
+### Environment variables
+
+Create a `.env` file at the repo root:
+
+```bash
+OAUTH_CLIENT_ID=human-browser-mcp
+OAUTH_CLIENT_SECRET=<random-secret-min-32-chars>
+OAUTH_ISSUER=https://brmcp.hobbitton.at
+MCP_AUTH_TOKEN=          # optional: static Bearer for curl/testing
+```
 
 ### Start with docker compose
 
 ```bash
-# Set your auth token
-export MCP_AUTH_TOKEN=your-secret-token
-
-docker compose up -d
+docker compose up -d --build
 ```
 
-The server listens on `:3000`. Reverse-proxy it with nginx/Caddy to expose it at your domain (e.g. `https://browser.hobbitton.at/mcp`).
+The server listens on `:3000`. Reverse-proxy with nginx/Caddy to your domain.
 
 ### Configure claude.ai
 
 In claude.ai → Settings → Integrations → Add MCP server:
-- **URL**: `https://browser.hobbitton.at/mcp`
-- **Auth**: Bearer `your-secret-token`
+- **URL**: `https://brmcp.hobbitton.at/mcp`
+- **OAuth Client ID**: value of `OAUTH_CLIENT_ID`
+- **OAuth Client Secret**: value of `OAUTH_CLIENT_SECRET`
+
+Claude.ai will discover the OAuth endpoints automatically via:
+`GET https://brmcp.hobbitton.at/.well-known/oauth-authorization-server`
+
+### OAuth flow (automatic, no user login page)
+
+```
+claude.ai → GET /oauth/authorize?client_id=...&code_challenge=...&redirect_uri=...
+         ← 302 redirect_uri?code=<code>
+claude.ai → POST /oauth/token {code, code_verifier, client_secret}
+         ← {access_token, token_type: "Bearer", expires_in: 86400}
+claude.ai → POST /mcp  Authorization: Bearer <access_token>
+```
+
+Tokens expire after 24 h. Auth codes expire after 10 min.
 
 ### Verify
 
 ```bash
-# Health check (no auth needed)
-curl http://localhost:3000/health
+# 1. OAuth discovery
+curl https://brmcp.hobbitton.at/.well-known/oauth-authorization-server
 
-# Open SSE stream (auth required)
-curl -H "Authorization: Bearer your-secret-token" \
-     -H "Accept: text/event-stream" \
-     http://localhost:3000/mcp
+# 2. Authorize redirect (expects 302)
+curl -v "https://brmcp.hobbitton.at/oauth/authorize?\
+client_id=human-browser-mcp&\
+redirect_uri=https://example.com/callback&\
+state=test123&\
+code_challenge=abc&\
+code_challenge_method=S256&\
+response_type=code"
+
+# 3. /mcp without token must return 401
+curl -s -o /dev/null -w "%{http_code}" https://brmcp.hobbitton.at/mcp
+
+# 4. Health check (no auth)
+curl https://brmcp.hobbitton.at/health
 ```
-
-The second command should open a persistent SSE connection and stay open.
 
 ---
 
-## Environment variables
+## Environment variables reference
 
 | Variable | Default | Description |
 |---|---|---|
 | `MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
 | `MCP_PORT` | `3000` | HTTP listen port |
-| `MCP_AUTH_TOKEN` | _(empty)_ | Bearer token (required in HTTP mode) |
+| `MCP_AUTH_TOKEN` | _(empty)_ | Static Bearer fallback (curl testing) |
+| `OAUTH_CLIENT_ID` | _(empty)_ | OAuth client identifier |
+| `OAUTH_CLIENT_SECRET` | _(empty)_ | OAuth client secret |
+| `OAUTH_ISSUER` | `http://localhost:3000` | Public base URL for OAuth metadata |
 | `HEADLESS` | `true` | Set to `false` to show the browser window |
 | `SLOW_MO` | `0` | Extra ms between Playwright actions |
 | `BROWSER_TIMEOUT` | `30000` | Default selector/navigation timeout |
