@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "human-browser": {
+      "command": "node",
+      "args": ["/absolute/path/to/human-browser-mcp/dist/index.js"],
+      "env": {
+        "HEADLESS": "true",
+        "SLOW_MO": "0",
+        "BROWSER_TIMEOUT": "30000",
+        "CAPSOLVER_API_KEY": ""
+      }
+    }
+  }
+}
