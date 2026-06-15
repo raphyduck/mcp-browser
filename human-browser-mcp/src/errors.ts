@@ -1,5 +1,3 @@
-import type { Page } from 'playwright';
-
 export type ErrorCode =
   | 'NOT_FOUND'
   | 'MULTIPLE_MATCHES'
@@ -54,53 +52,4 @@ export function classifyError(err: unknown): Classified {
     return { code: 'FRAME_NOT_FOUND', message, details: {} };
   }
   return { code: 'UNKNOWN', message, details: {} };
-}
-
-/**
- * Resolve a selector to a precise error code before acting. Preserves auto-wait
- * (waits for the element to attach, so late-rendered elements still work), then
- * distinguishes NOT_FOUND / MULTIPLE_MATCHES / NOT_VISIBLE.
- */
-export async function precheckSelector(
-  page: Page,
-  selector: string,
-  opts: { unique?: boolean; visible?: boolean; timeout: number }
-): Promise<void> {
-  const loc = page.locator(selector);
-
-  // Wait for at least one match to attach; if none ever appears → NOT_FOUND.
-  try {
-    await loc.first().waitFor({ state: 'attached', timeout: opts.timeout });
-  } catch {
-    throw new ActionError('NOT_FOUND', `No element matches "${selector}"`, { selector });
-  }
-
-  if (opts.unique) {
-    const count = await loc.count();
-    if (count > 1) {
-      const candidates: string[] = [];
-      for (let i = 0; i < Math.min(count, 5); i++) {
-        try {
-          const t = (await loc.nth(i).innerText({ timeout: 500 })).trim().slice(0, 60);
-          candidates.push(t || `<${(await loc.nth(i).evaluate((e) => e.tagName.toLowerCase()))}>`);
-        } catch {
-          /* skip unreadable candidate */
-        }
-      }
-      throw new ActionError(
-        'MULTIPLE_MATCHES',
-        `${count} elements match "${selector}". Refine the selector or use data-som-id.`,
-        { selector, count, candidates }
-      );
-    }
-  }
-
-  if (opts.visible) {
-    const visible = await loc.first().isVisible();
-    if (!visible) {
-      throw new ActionError('NOT_VISIBLE', `Element "${selector}" is present but not visible`, {
-        selector,
-      });
-    }
-  }
 }

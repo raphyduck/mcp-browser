@@ -4,7 +4,8 @@ import { humanDelay, typingDelay, randomPause, sleep, scrollChunk } from './util
 import { config } from './config.js';
 import { markFrame, clearOverlay, MarkedItem } from './som.js';
 import { waitForSettle } from './wait.js';
-import { precheckSelector, classifyError } from './errors.js';
+import { classifyError } from './errors.js';
+import { resolveTarget } from './frames.js';
 
 const DEFAULT_TIMEOUT = config.defaultTimeout;
 
@@ -248,15 +249,31 @@ export async function browserWaitFor(args: { selector: string; timeout?: number;
 // Interactions
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function browserClick(args: { selector: string; button?: string; settle_ms?: number }) {
+export async function browserClick(args: {
+  selector: string;
+  button?: string;
+  settle_ms?: number;
+  frame?: string;
+}) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await precheckSelector(page, args.selector, { unique: true, visible: true, timeout: DEFAULT_TIMEOUT });
+    const target = await resolveTarget(page, args.selector, {
+      frame: args.frame,
+      unique: true,
+      visible: true,
+      timeout: DEFAULT_TIMEOUT,
+    });
 
     const urlBefore = page.url();
-    const cursor = await browserManager.getCursor();
-    await cursor.actions.move({ targetElem: args.selector });
-    await cursor.actions.click();
+    if (target.isMain) {
+      // Human-like trajectory only works in the main frame (ghost-cursor uses
+      // page-level coordinates); iframe targets fall back to a native click.
+      const cursor = await browserManager.getCursor();
+      await cursor.actions.move({ targetElem: args.selector });
+      await cursor.actions.click({ waitBetweenClick: [20, 80] });
+    } else {
+      await target.locator.click();
+    }
 
     // Post-click settle: if the click triggers a SPA navigation or re-render,
     // wait for the DOM to go quiet (capped) instead of returning immediately.
@@ -268,15 +285,31 @@ export async function browserClick(args: { selector: string; button?: string; se
   }).catch(makeErrorResponse);
 }
 
-export async function browserType(args: { selector: string; text: string; clearFirst?: boolean }) {
+export async function browserType(args: {
+  selector: string;
+  text: string;
+  clearFirst?: boolean;
+  frame?: string;
+}) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await precheckSelector(page, args.selector, { unique: true, visible: true, timeout: DEFAULT_TIMEOUT });
+    const target = await resolveTarget(page, args.selector, {
+      frame: args.frame,
+      unique: true,
+      visible: true,
+      timeout: DEFAULT_TIMEOUT,
+    });
     const urlBefore = page.url();
 
-    const cursor = await browserManager.getCursor();
-    await cursor.actions.move({ targetElem: args.selector });
-    await cursor.actions.click();
+    // Focus the field: ghost-cursor in the main frame, native click in iframes.
+    // Keyboard input then routes to whatever element holds focus (any frame).
+    if (target.isMain) {
+      const cursor = await browserManager.getCursor();
+      await cursor.actions.move({ targetElem: args.selector });
+      await cursor.actions.click({ waitBetweenClick: [20, 80] });
+    } else {
+      await target.locator.click();
+    }
     await sleep(150 + Math.random() * 100);
 
     if (args.clearFirst) {
@@ -297,27 +330,41 @@ export async function browserType(args: { selector: string; text: string; clearF
   }).catch(makeErrorResponse);
 }
 
-export async function browserClearAndType(args: { selector: string; text: string }) {
-  return browserType({ selector: args.selector, text: args.text, clearFirst: true });
+export async function browserClearAndType(args: { selector: string; text: string; frame?: string }) {
+  return browserType({ selector: args.selector, text: args.text, clearFirst: true, frame: args.frame });
 }
 
-export async function browserSelect(args: { selector: string; value: string }) {
+export async function browserSelect(args: { selector: string; value: string; frame?: string }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await precheckSelector(page, args.selector, { unique: true, visible: true, timeout: DEFAULT_TIMEOUT });
+    const target = await resolveTarget(page, args.selector, {
+      frame: args.frame,
+      unique: true,
+      visible: true,
+      timeout: DEFAULT_TIMEOUT,
+    });
     const urlBefore = page.url();
-    await page.selectOption(args.selector, args.value);
+    await target.locator.selectOption(args.value);
     await humanDelay();
     return stateResult(urlBefore, `Selected "${args.value}"`);
   }).catch(makeErrorResponse);
 }
 
-export async function browserHover(args: { selector: string }) {
+export async function browserHover(args: { selector: string; frame?: string }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await precheckSelector(page, args.selector, { unique: true, visible: true, timeout: DEFAULT_TIMEOUT });
-    const cursor = await browserManager.getCursor();
-    await cursor.actions.move({ targetElem: args.selector });
+    const target = await resolveTarget(page, args.selector, {
+      frame: args.frame,
+      unique: true,
+      visible: true,
+      timeout: DEFAULT_TIMEOUT,
+    });
+    if (target.isMain) {
+      const cursor = await browserManager.getCursor();
+      await cursor.actions.move({ targetElem: args.selector });
+    } else {
+      await target.locator.hover();
+    }
     await humanDelay();
     return { content: [{ type: 'text', text: `Hovered over "${args.selector}"` }] };
   }).catch(makeErrorResponse);

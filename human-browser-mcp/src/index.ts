@@ -151,6 +151,10 @@ const TOOLS = [
           type: 'number',
           description: 'Post-click DOM-settle window in ms (default 300, capped at 3000)',
         },
+        frame: {
+          type: 'string',
+          description: 'Optional frame hint (name | url substring | numeric index) to target an iframe',
+        },
       },
       required: ['selector'],
     },
@@ -164,6 +168,10 @@ const TOOLS = [
         selector: { type: 'string', description: 'CSS selector of input element' },
         text: { type: 'string', description: 'Text to type' },
         clearFirst: { type: 'boolean', description: 'Select-all before typing (default false)' },
+        frame: {
+          type: 'string',
+          description: 'Optional frame hint (name | url substring | numeric index) to target an iframe',
+        },
       },
       required: ['selector', 'text'],
     },
@@ -176,6 +184,10 @@ const TOOLS = [
       properties: {
         selector: { type: 'string', description: 'CSS selector of input element' },
         text: { type: 'string', description: 'Text to type' },
+        frame: {
+          type: 'string',
+          description: 'Optional frame hint (name | url substring | numeric index) to target an iframe',
+        },
       },
       required: ['selector', 'text'],
     },
@@ -188,6 +200,10 @@ const TOOLS = [
       properties: {
         selector: { type: 'string', description: 'CSS selector of <select>' },
         value: { type: 'string', description: 'Option value to select' },
+        frame: {
+          type: 'string',
+          description: 'Optional frame hint (name | url substring | numeric index) to target an iframe',
+        },
       },
       required: ['selector', 'value'],
     },
@@ -199,6 +215,10 @@ const TOOLS = [
       type: 'object',
       properties: {
         selector: { type: 'string', description: 'CSS selector of element to hover' },
+        frame: {
+          type: 'string',
+          description: 'Optional frame hint (name | url substring | numeric index) to target an iframe',
+        },
       },
       required: ['selector'],
     },
