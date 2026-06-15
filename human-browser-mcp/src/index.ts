@@ -17,6 +17,7 @@ import {
   browserGetUrl,
   browserGetContent,
   browserScreenshot,
+  browserMarkPage,
   browserWaitFor,
   browserClick,
   browserType,
@@ -94,6 +95,24 @@ const TOOLS = [
       properties: {
         selector: { type: 'string', description: 'CSS selector of element to capture (optional)' },
         fullPage: { type: 'boolean', description: 'Capture full page (default false)' },
+      },
+    },
+  },
+  {
+    name: 'browser_mark_page',
+    description:
+      'Set-of-marks: stamp every visible interactive element with data-som-id="N", overlay numbered boxes, and return an annotated screenshot plus a compact JSON map. Click marked elements later with selector [data-som-id="N"].',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        viewport_only: {
+          type: 'boolean',
+          description: 'Only mark elements inside the current viewport (default true)',
+        },
+        max_elements: {
+          type: 'number',
+          description: 'Safety cap on the number of marked elements (default 200)',
+        },
       },
     },
   },
@@ -287,6 +306,7 @@ const ACTIONS: Record<string, ActionFn> = {
   browser_get_url: browserGetUrl,
   browser_get_content: browserGetContent,
   browser_screenshot: browserScreenshot,
+  browser_mark_page: browserMarkPage,
   browser_wait_for: browserWaitFor,
   browser_click: browserClick,
   browser_type: browserType,

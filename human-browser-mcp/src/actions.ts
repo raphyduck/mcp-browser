@@ -1,7 +1,16 @@
+import type { Frame } from 'playwright';
 import { browserManager } from './browser.js';
 import { humanDelay, typingDelay, randomPause, sleep, scrollChunk } from './utils.js';
+import { config } from './config.js';
+import { markFrame, clearOverlay, MarkedItem } from './som.js';
 
-const DEFAULT_TIMEOUT = parseInt(process.env.BROWSER_TIMEOUT ?? '30000', 10);
+const DEFAULT_TIMEOUT = config.defaultTimeout;
+
+/** Stable label for a frame, used in mark_page output. */
+function frameLabel(frame: Frame, isMain: boolean, index: number): string {
+  if (isMain) return 'main';
+  return frame.name() || frame.url() || `frame-${index}`;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -119,6 +128,72 @@ export async function browserScreenshot(args: { selector?: string; fullPage?: bo
   }).catch(makeErrorResponse);
 }
 
+export async function browserMarkPage(args: { viewport_only?: boolean; max_elements?: number }) {
+  return withErrorScreenshot(async () => {
+    const page = await browserManager.getPage();
+    const viewportOnly = args.viewport_only ?? true;
+    const maxElements = args.max_elements ?? config.markMaxElements;
+
+    const frames = page.frames();
+    const marked: (MarkedItem & { frame: string })[] = [];
+    let startId = 0;
+
+    // Mark the main frame first, then each child frame, keeping ids globally
+    // unique by carrying the running id offset across frames.
+    for (let i = 0; i < frames.length; i++) {
+      const frame = frames[i];
+      const isMain = frame === page.mainFrame();
+      const label = frameLabel(frame, isMain, i);
+      const remaining = maxElements - marked.length;
+      if (remaining <= 0) break;
+      try {
+        const result = await frame.evaluate(markFrame, {
+          startId,
+          viewportOnly,
+          maxElements: remaining,
+        });
+        for (const item of result.items) {
+          marked.push({ ...item, frame: label });
+        }
+        startId = result.lastId;
+      } catch {
+        // Cross-origin / inaccessible frame — skip it silently.
+      }
+    }
+
+    // Screenshot the viewport WITH the overlay visible.
+    const buffer = await page.screenshot({ type: 'png', fullPage: false });
+    const data = buffer.toString('base64');
+
+    // Remove only the visual overlay; keep data-som-id attributes intact.
+    for (const frame of frames) {
+      try {
+        await frame.evaluate(clearOverlay);
+      } catch {
+        // ignore
+      }
+    }
+
+    const map = {
+      count: marked.length,
+      elements: marked.map((m) => ({
+        id: m.id,
+        tag: m.tag,
+        type: m.type,
+        text: m.text,
+        frame: m.frame,
+      })),
+    };
+
+    return {
+      content: [
+        { type: 'image', data, mimeType: 'image/png' },
+        { type: 'text', text: JSON.stringify(map) },
+      ],
+    };
+  }).catch(makeErrorResponse);
+}
+
 export async function browserWaitFor(args: { selector: string; timeout?: number; state?: string }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
@@ -139,7 +214,8 @@ export async function browserClick(args: { selector: string; button?: string }) 
     await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
 
     const cursor = await browserManager.getCursor();
-    (cursor.actions as any).click({ target: args.selector });
+    await cursor.actions.move({ targetElem: args.selector });
+    await cursor.actions.click();
 
     await humanDelay();
     return { content: [{ type: 'text', text: `Clicked "${args.selector}"` }] };
@@ -152,7 +228,8 @@ export async function browserType(args: { selector: string; text: string; clearF
     await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
 
     const cursor = await browserManager.getCursor();
-    (cursor.actions as any).click({ target: args.selector });
+    await cursor.actions.move({ targetElem: args.selector });
+    await cursor.actions.click();
     await sleep(150 + Math.random() * 100);
 
     if (args.clearFirst) {
@@ -192,7 +269,7 @@ export async function browserHover(args: { selector: string }) {
     const page = await browserManager.getPage();
     await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
     const cursor = await browserManager.getCursor();
-    (cursor.actions as any).move(args.selector);
+    await cursor.actions.move({ targetElem: args.selector });
     await humanDelay();
     return { content: [{ type: 'text', text: `Hovered over "${args.selector}"` }] };
   }).catch(makeErrorResponse);
@@ -288,9 +365,10 @@ export async function browserSolveCaptcha(args: { type?: string }) {
   return withErrorScreenshot(async () => {
     let Capsolver: any;
     try {
-      // Dynamic import so the whole server still works without the package
-      // @ts-ignore
-      const mod = await import("@capsolver/capsolver-npm");
+      // Dynamic import via a non-literal specifier so the build does not require
+      // the optional package to be installed; the server still works without it.
+      const pkg = '@capsolver/capsolver-npm';
+      const mod: any = await import(pkg);
       Capsolver = mod.default ?? mod.Capsolver;
     } catch {
       return { content: [{ type: 'text', text: '@capsolver/capsolver-npm is not installed' }] };
