@@ -17,6 +17,7 @@ import {
   browserGetUrl,
   browserGetContent,
   browserScreenshot,
+  browserMarkPage,
   browserWaitFor,
   browserClick,
   browserType,
@@ -47,8 +48,13 @@ const TOOLS = [
         url: { type: 'string', description: 'Target URL' },
         waitUntil: {
           type: 'string',
-          enum: ['load', 'domcontentloaded', 'networkidle', 'commit'],
-          description: 'When to consider navigation done (default: domcontentloaded)',
+          enum: ['domcontentloaded', 'load', 'networkidle', 'none'],
+          description:
+            "Load state to wait for (default: domcontentloaded, then a DOM settle). 'none' returns on commit with no settle. 'networkidle' is opt-in only — it may never fire on sites with websockets/long-polling.",
+        },
+        settle_ms: {
+          type: 'number',
+          description: 'Override the post-load DOM-settle window in ms (default 500, capped at 3000)',
         },
       },
       required: ['url'],
@@ -98,6 +104,24 @@ const TOOLS = [
     },
   },
   {
+    name: 'browser_mark_page',
+    description:
+      'Set-of-marks: stamp every visible interactive element with data-som-id="N", overlay numbered boxes, and return an annotated screenshot plus a compact JSON map. Click marked elements later with selector [data-som-id="N"].',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        viewport_only: {
+          type: 'boolean',
+          description: 'Only mark elements inside the current viewport (default true)',
+        },
+        max_elements: {
+          type: 'number',
+          description: 'Safety cap on the number of marked elements (default 200)',
+        },
+      },
+    },
+  },
+  {
     name: 'browser_wait_for',
     description: 'Wait until a CSS selector is in the given state',
     inputSchema: {
@@ -123,6 +147,14 @@ const TOOLS = [
       type: 'object',
       properties: {
         selector: { type: 'string', description: 'CSS selector of element to click' },
+        settle_ms: {
+          type: 'number',
+          description: 'Post-click DOM-settle window in ms (default 300, capped at 3000)',
+        },
+        frame: {
+          type: 'string',
+          description: 'Optional frame hint (name | url substring | numeric index) to target an iframe',
+        },
       },
       required: ['selector'],
     },
@@ -136,6 +168,10 @@ const TOOLS = [
         selector: { type: 'string', description: 'CSS selector of input element' },
         text: { type: 'string', description: 'Text to type' },
         clearFirst: { type: 'boolean', description: 'Select-all before typing (default false)' },
+        frame: {
+          type: 'string',
+          description: 'Optional frame hint (name | url substring | numeric index) to target an iframe',
+        },
       },
       required: ['selector', 'text'],
     },
@@ -148,6 +184,10 @@ const TOOLS = [
       properties: {
         selector: { type: 'string', description: 'CSS selector of input element' },
         text: { type: 'string', description: 'Text to type' },
+        frame: {
+          type: 'string',
+          description: 'Optional frame hint (name | url substring | numeric index) to target an iframe',
+        },
       },
       required: ['selector', 'text'],
     },
@@ -160,6 +200,10 @@ const TOOLS = [
       properties: {
         selector: { type: 'string', description: 'CSS selector of <select>' },
         value: { type: 'string', description: 'Option value to select' },
+        frame: {
+          type: 'string',
+          description: 'Optional frame hint (name | url substring | numeric index) to target an iframe',
+        },
       },
       required: ['selector', 'value'],
     },
@@ -171,6 +215,10 @@ const TOOLS = [
       type: 'object',
       properties: {
         selector: { type: 'string', description: 'CSS selector of element to hover' },
+        frame: {
+          type: 'string',
+          description: 'Optional frame hint (name | url substring | numeric index) to target an iframe',
+        },
       },
       required: ['selector'],
     },
@@ -287,6 +335,7 @@ const ACTIONS: Record<string, ActionFn> = {
   browser_get_url: browserGetUrl,
   browser_get_content: browserGetContent,
   browser_screenshot: browserScreenshot,
+  browser_mark_page: browserMarkPage,
   browser_wait_for: browserWaitFor,
   browser_click: browserClick,
   browser_type: browserType,

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>human-browser-mcp fixture</title>
+    <style>
+      body { font: 15px sans-serif; max-width: 720px; margin: 24px auto; }
+      fieldset { margin: 16px 0; }
+      .dup { margin-right: 8px; }
+      #async-slot:empty::after { content: '(loading…)'; color: #999; }
+    </style>
+  </head>
+  <body>
+    <h1>Fixture</h1>
+
+    <!-- A simple form -->
+    <form id="form" onsubmit="return false">
+      <fieldset>
+        <legend>Form</legend>
+        <label>Email <input id="email" type="email" placeholder="Email address" /></label><br />
+        <label>Name <input id="name" type="text" placeholder="Full name" /></label><br />
+        <label>
+          Country
+          <select id="country">
+            <option value="">--</option>
+            <option value="fr">France</option>
+            <option value="de">Germany</option>
+          </select>
+        </label><br />
+        <button id="submit" type="submit">Submit</button>
+      </fieldset>
+    </form>
+
+    <!-- Multiple matches for the same selector (MULTIPLE_MATCHES test) -->
+    <fieldset>
+      <legend>Duplicates</legend>
+      <button class="dup" type="button">Valider</button>
+      <button class="dup" type="button">Annuler</button>
+      <button class="dup" type="button">Enregistrer</button>
+    </fieldset>
+
+    <!-- A button rendered asynchronously after 800ms -->
+    <fieldset>
+      <legend>Async</legend>
+      <div id="async-slot"></div>
+    </fieldset>
+
+    <!-- An iframe with a field -->
+    <fieldset>
+      <legend>Iframe</legend>
+      <iframe id="inner" name="inner" src="iframe.html" width="320" height="120"></iframe>
+    </fieldset>
+
+    <!-- A web component with an OPEN shadow root -->
+    <fieldset>
+      <legend>Shadow DOM</legend>
+      <my-widget></my-widget>
+    </fieldset>
+
+    <script>
+      // Async button appears after 800ms.
+      setTimeout(() => {
+        const btn = document.createElement('button');
+        btn.id = 'async-btn';
+        btn.type = 'button';
+        btn.textContent = 'Async ready';
+        btn.addEventListener('click', () => (btn.textContent = 'Async clicked'));
+        document.getElementById('async-slot').appendChild(btn);
+      }, 800);
+
+      // Web component with an open shadow root containing an input.
+      class MyWidget extends HTMLElement {
+        constructor() {
+          super();
+          const root = this.attachShadow({ mode: 'open' });
+          const input = document.createElement('input');
+          input.id = 'shadow-input';
+          input.placeholder = 'shadow field';
+          root.appendChild(input);
+        }
+      }
+      customElements.define('my-widget', MyWidget);
+    </script>
+  </body>
+</html>

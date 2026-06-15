@@ -1,7 +1,39 @@
+import type { Frame } from 'playwright';
 import { browserManager } from './browser.js';
 import { humanDelay, typingDelay, randomPause, sleep, scrollChunk } from './utils.js';
+import { config } from './config.js';
+import { markFrame, clearOverlay, MarkedItem } from './som.js';
+import { waitForSettle } from './wait.js';
+import { classifyError } from './errors.js';
+import { resolveTarget } from './frames.js';
 
-const DEFAULT_TIMEOUT = parseInt(process.env.BROWSER_TIMEOUT ?? '30000', 10);
+const DEFAULT_TIMEOUT = config.defaultTimeout;
+
+/** Stable label for a frame, used in mark_page output. */
+function frameLabel(frame: Frame, isMain: boolean, index: number): string {
+  if (isMain) return 'main';
+  return frame.name() || frame.url() || `frame-${index}`;
+}
+
+/**
+ * Compact structured state returned by every mutating action, so callers know
+ * what happened without a separate get_url / get_content round-trip.
+ */
+async function stateResult(urlBefore: string, extraNote?: string) {
+  const page = await browserManager.getPage();
+  const url = page.url();
+  const navigated = url !== urlBefore;
+  let title = '';
+  try {
+    title = await page.title();
+  } catch {
+    /* title unavailable mid-transition */
+  }
+  const state: Record<string, unknown> = { ok: true, url, title, navigated };
+  const note = extraNote ?? (navigated ? 'URL changed during the action' : undefined);
+  if (note) state.note = note;
+  return { content: [{ type: 'text', text: JSON.stringify(state) }] };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -23,29 +55,47 @@ async function withErrorScreenshot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-function makeErrorResponse(err: unknown): { content: { type: string; text: string }[]; __screenshot?: string } {
-  const message = err instanceof Error ? err.message : String(err);
-  const response: any = {
-    content: [{ type: 'text', text: `Error: ${message}` }],
+function makeErrorResponse(err: unknown): { content: any[] } {
+  const info = classifyError(err);
+  const body = {
+    ok: false,
+    error: { code: info.code, message: info.message, ...info.details },
   };
+  const content: any[] = [{ type: 'text', text: JSON.stringify(body) }];
   if ((err as any).__screenshot) {
-    response.content.push({ type: 'image', data: (err as any).__screenshot, mimeType: 'image/png' });
+    content.push({ type: 'image', data: (err as any).__screenshot, mimeType: 'image/png' });
   }
-  return response;
+  return { content };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Navigation
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function browserNavigate(args: { url: string; waitUntil?: string }) {
+export async function browserNavigate(args: {
+  url: string;
+  waitUntil?: 'domcontentloaded' | 'load' | 'networkidle' | 'none';
+  settle_ms?: number;
+}) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    const waitUntil = (args.waitUntil ?? 'domcontentloaded') as any;
-    await page.goto(args.url, { waitUntil, timeout: DEFAULT_TIMEOUT });
+    const urlBefore = page.url();
+    const mode = args.waitUntil ?? 'domcontentloaded';
+
+    // 'none' → return as soon as navigation commits, no load-state or settle wait.
+    // networkidle stays opt-in only: on sites with websockets/long-polling/
+    // analytics it may never fire and the call would hang.
+    const gotoWaitUntil = mode === 'none' ? 'commit' : mode;
+    await page.goto(args.url, { waitUntil: gotoWaitUntil as any, timeout: DEFAULT_TIMEOUT });
     browserManager.resetCursor();
+
+    if (mode !== 'none') {
+      const settle = Math.min(args.settle_ms ?? config.navigateSettleMs, config.navigateSettleCapMs);
+      await waitForSettle(page, settle, config.navigateSettleCapMs);
+    }
+
     await humanDelay();
-    return { content: [{ type: 'text', text: `Navigated to ${page.url()}` }] };
+    return stateResult(urlBefore);
   }).catch(makeErrorResponse);
 }
 
@@ -119,6 +169,72 @@ export async function browserScreenshot(args: { selector?: string; fullPage?: bo
   }).catch(makeErrorResponse);
 }
 
+export async function browserMarkPage(args: { viewport_only?: boolean; max_elements?: number }) {
+  return withErrorScreenshot(async () => {
+    const page = await browserManager.getPage();
+    const viewportOnly = args.viewport_only ?? true;
+    const maxElements = args.max_elements ?? config.markMaxElements;
+
+    const frames = page.frames();
+    const marked: (MarkedItem & { frame: string })[] = [];
+    let startId = 0;
+
+    // Mark the main frame first, then each child frame, keeping ids globally
+    // unique by carrying the running id offset across frames.
+    for (let i = 0; i < frames.length; i++) {
+      const frame = frames[i];
+      const isMain = frame === page.mainFrame();
+      const label = frameLabel(frame, isMain, i);
+      const remaining = maxElements - marked.length;
+      if (remaining <= 0) break;
+      try {
+        const result = await frame.evaluate(markFrame, {
+          startId,
+          viewportOnly,
+          maxElements: remaining,
+        });
+        for (const item of result.items) {
+          marked.push({ ...item, frame: label });
+        }
+        startId = result.lastId;
+      } catch {
+        // Cross-origin / inaccessible frame — skip it silently.
+      }
+    }
+
+    // Screenshot the viewport WITH the overlay visible.
+    const buffer = await page.screenshot({ type: 'png', fullPage: false });
+    const data = buffer.toString('base64');
+
+    // Remove only the visual overlay; keep data-som-id attributes intact.
+    for (const frame of frames) {
+      try {
+        await frame.evaluate(clearOverlay);
+      } catch {
+        // ignore
+      }
+    }
+
+    const map = {
+      count: marked.length,
+      elements: marked.map((m) => ({
+        id: m.id,
+        tag: m.tag,
+        type: m.type,
+        text: m.text,
+        frame: m.frame,
+      })),
+    };
+
+    return {
+      content: [
+        { type: 'image', data, mimeType: 'image/png' },
+        { type: 'text', text: JSON.stringify(map) },
+      ],
+    };
+  }).catch(makeErrorResponse);
+}
+
 export async function browserWaitFor(args: { selector: string; timeout?: number; state?: string }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
@@ -133,26 +249,67 @@ export async function browserWaitFor(args: { selector: string; timeout?: number;
 // Interactions
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function browserClick(args: { selector: string; button?: string }) {
+export async function browserClick(args: {
+  selector: string;
+  button?: string;
+  settle_ms?: number;
+  frame?: string;
+}) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
+    const target = await resolveTarget(page, args.selector, {
+      frame: args.frame,
+      unique: true,
+      visible: true,
+      timeout: DEFAULT_TIMEOUT,
+    });
 
-    const cursor = await browserManager.getCursor();
-    (cursor.actions as any).click({ target: args.selector });
+    const urlBefore = page.url();
+    if (target.isMain) {
+      // Human-like trajectory only works in the main frame (ghost-cursor uses
+      // page-level coordinates); iframe targets fall back to a native click.
+      const cursor = await browserManager.getCursor();
+      await cursor.actions.move({ targetElem: args.selector });
+      await cursor.actions.click({ waitBetweenClick: [20, 80] });
+    } else {
+      await target.locator.click();
+    }
+
+    // Post-click settle: if the click triggers a SPA navigation or re-render,
+    // wait for the DOM to go quiet (capped) instead of returning immediately.
+    const settle = Math.min(args.settle_ms ?? config.clickSettleMs, config.clickSettleCapMs);
+    await waitForSettle(page, settle, config.clickSettleCapMs);
 
     await humanDelay();
-    return { content: [{ type: 'text', text: `Clicked "${args.selector}"` }] };
+    return stateResult(urlBefore);
   }).catch(makeErrorResponse);
 }
 
-export async function browserType(args: { selector: string; text: string; clearFirst?: boolean }) {
+export async function browserType(args: {
+  selector: string;
+  text: string;
+  clearFirst?: boolean;
+  frame?: string;
+}) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
+    const target = await resolveTarget(page, args.selector, {
+      frame: args.frame,
+      unique: true,
+      visible: true,
+      timeout: DEFAULT_TIMEOUT,
+    });
+    const urlBefore = page.url();
 
-    const cursor = await browserManager.getCursor();
-    (cursor.actions as any).click({ target: args.selector });
+    // Focus the field: ghost-cursor in the main frame, native click in iframes.
+    // Keyboard input then routes to whatever element holds focus (any frame).
+    if (target.isMain) {
+      const cursor = await browserManager.getCursor();
+      await cursor.actions.move({ targetElem: args.selector });
+      await cursor.actions.click({ waitBetweenClick: [20, 80] });
+    } else {
+      await target.locator.click();
+    }
     await sleep(150 + Math.random() * 100);
 
     if (args.clearFirst) {
@@ -169,30 +326,45 @@ export async function browserType(args: { selector: string; text: string; clearF
     }
 
     await humanDelay();
-    return { content: [{ type: 'text', text: `Typed ${args.text.length} characters into "${args.selector}"` }] };
+    return stateResult(urlBefore, `Typed ${args.text.length} characters`);
   }).catch(makeErrorResponse);
 }
 
-export async function browserClearAndType(args: { selector: string; text: string }) {
-  return browserType({ selector: args.selector, text: args.text, clearFirst: true });
+export async function browserClearAndType(args: { selector: string; text: string; frame?: string }) {
+  return browserType({ selector: args.selector, text: args.text, clearFirst: true, frame: args.frame });
 }
 
-export async function browserSelect(args: { selector: string; value: string }) {
+export async function browserSelect(args: { selector: string; value: string; frame?: string }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
-    await page.selectOption(args.selector, args.value);
+    const target = await resolveTarget(page, args.selector, {
+      frame: args.frame,
+      unique: true,
+      visible: true,
+      timeout: DEFAULT_TIMEOUT,
+    });
+    const urlBefore = page.url();
+    await target.locator.selectOption(args.value);
     await humanDelay();
-    return { content: [{ type: 'text', text: `Selected "${args.value}" in "${args.selector}"` }] };
+    return stateResult(urlBefore, `Selected "${args.value}"`);
   }).catch(makeErrorResponse);
 }
 
-export async function browserHover(args: { selector: string }) {
+export async function browserHover(args: { selector: string; frame?: string }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
-    const cursor = await browserManager.getCursor();
-    (cursor.actions as any).move(args.selector);
+    const target = await resolveTarget(page, args.selector, {
+      frame: args.frame,
+      unique: true,
+      visible: true,
+      timeout: DEFAULT_TIMEOUT,
+    });
+    if (target.isMain) {
+      const cursor = await browserManager.getCursor();
+      await cursor.actions.move({ targetElem: args.selector });
+    } else {
+      await target.locator.hover();
+    }
     await humanDelay();
     return { content: [{ type: 'text', text: `Hovered over "${args.selector}"` }] };
   }).catch(makeErrorResponse);
@@ -226,12 +398,16 @@ export async function browserScroll(args: { deltaX?: number; deltaY?: number; se
 export async function browserPressKey(args: { key: string; modifiers?: string[] }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
+    const urlBefore = page.url();
     const modifiers = args.modifiers ?? [];
     for (const mod of modifiers) await page.keyboard.down(mod);
     await page.keyboard.press(args.key);
     for (const mod of [...modifiers].reverse()) await page.keyboard.up(mod);
+
+    // A key press (Enter, etc.) may trigger navigation — let it settle briefly.
+    await waitForSettle(page, config.clickSettleMs, config.clickSettleCapMs);
     await humanDelay();
-    return { content: [{ type: 'text', text: `Pressed key "${args.key}"` }] };
+    return stateResult(urlBefore, `Pressed key "${args.key}"`);
   }).catch(makeErrorResponse);
 }
 
@@ -288,9 +464,10 @@ export async function browserSolveCaptcha(args: { type?: string }) {
   return withErrorScreenshot(async () => {
     let Capsolver: any;
     try {
-      // Dynamic import so the whole server still works without the package
-      // @ts-ignore
-      const mod = await import("@capsolver/capsolver-npm");
+      // Dynamic import via a non-literal specifier so the build does not require
+      // the optional package to be installed; the server still works without it.
+      const pkg = '@capsolver/capsolver-npm';
+      const mod: any = await import(pkg);
       Capsolver = mod.default ?? mod.Capsolver;
     } catch {
       return { content: [{ type: 'text', text: '@capsolver/capsolver-npm is not installed' }] };

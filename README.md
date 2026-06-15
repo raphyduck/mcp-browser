@@ -131,37 +131,120 @@ curl https://brmcp.hobbitton.at/health
 | `HEADLESS` | `true` | Set to `false` to show the browser window |
 | `SLOW_MO` | `0` | Extra ms between Playwright actions |
 | `BROWSER_TIMEOUT` | `30000` | Default selector/navigation timeout |
+| `NAVIGATE_SETTLE_MS` | `500` | DOM-settle window after navigation |
+| `NAVIGATE_SETTLE_CAP_MS` | `3000` | Hard cap on the navigation settle wait |
+| `CLICK_SETTLE_MS` | `300` | DOM-settle window after a click |
+| `CLICK_SETTLE_CAP_MS` | `3000` | Hard cap on the click settle wait |
+| `MARK_MAX_ELEMENTS` | `200` | Default cap for `browser_mark_page` |
 | `CAPSOLVER_API_KEY` | _(unset)_ | Enables `browser_solve_captcha` |
 
 ---
 
-## Available tools (20)
+## Available tools (21)
 
 ### Navigation
-- `browser_navigate` – go to URL
+- `browser_navigate` – go to URL. `waitUntil`: `domcontentloaded` (default, then a
+  DOM settle) · `load` · `networkidle` (opt-in only) · `none` (commit, no settle).
+  Optional `settle_ms`.
 - `browser_back` / `browser_forward` / `browser_refresh`
 - `browser_get_url` – return current URL
 
 ### Reading
 - `browser_get_content` – visible text (whole page or selector)
 - `browser_screenshot` – PNG as base64 (whole page or element)
+- `browser_mark_page` – **set-of-marks**: stamp every visible interactive element
+  with `data-som-id="N"`, return an annotated screenshot + a compact JSON map.
+  Click them later with `[data-som-id="N"]`. Options: `viewport_only` (default
+  true), `max_elements` (default 200).
 - `browser_wait_for` – wait for a CSS selector to be visible/hidden/etc.
 
 ### Interactions
-- `browser_click` – ghost-cursor click (realistic mouse path)
-- `browser_type` – Gaussian-delay typing (30–120 ms/char)
-- `browser_clear_and_type` – clear field then type
-- `browser_select` – pick a `<select>` option
-- `browser_hover` – ghost-cursor hover
+- `browser_click` – ghost-cursor click (realistic mouse path). Options: `settle_ms`, `frame`.
+- `browser_type` – Gaussian-delay typing (30–120 ms/char). Options: `clearFirst`, `frame`.
+- `browser_clear_and_type` – clear field then type. Option: `frame`.
+- `browser_select` – pick a `<select>` option. Option: `frame`.
+- `browser_hover` – ghost-cursor hover. Option: `frame`.
 - `browser_scroll` – non-linear scroll with micro-pauses
 - `browser_press_key` – keyboard key with optional modifiers
 - `browser_evaluate` – run arbitrary JS in page context
+
+`frame` is an optional hint (frame **name** | **url substring** | **numeric
+index**) to target an element inside an iframe. Omit it to auto-detect: the main
+frame is tried first, then each child frame.
 
 ### Session
 - `browser_get_cookies` / `browser_set_cookies` / `browser_clear_cookies`
 
 ### CapSolver (optional)
 - `browser_solve_captcha` – solve reCAPTCHA v2/v3, hCaptcha, Turnstile
+
+---
+
+## Response formats
+
+**Mutating actions** (`navigate`, `click`, `type`, `clear_and_type`, `select`,
+`press_key`) return a compact JSON state block — no separate `get_url` needed:
+
+```json
+{ "ok": true, "url": "https://example.com/step-2", "title": "Step 2", "navigated": true, "note": "URL changed during the action" }
+```
+
+**`browser_mark_page`** returns two blocks: an image (annotated screenshot) and a
+JSON map:
+
+```json
+{ "count": 23, "elements": [ { "id": 1, "tag": "input", "type": "email", "text": "Email address", "frame": "main" } ] }
+```
+
+**Failures** return a structured error instead of a raw stack:
+
+```json
+{ "ok": false, "error": { "code": "MULTIPLE_MATCHES", "selector": "button.submit", "count": 3, "candidates": ["Valider", "Annuler", "Enregistrer"], "message": "..." } }
+```
+
+Error codes: `NOT_FOUND`, `MULTIPLE_MATCHES`, `NOT_VISIBLE`, `INTERCEPTED`,
+`DETACHED`, `TIMEOUT`, `FRAME_NOT_FOUND`, `UNKNOWN`. A screenshot is attached to
+errors when one can be captured.
+
+---
+
+## Reliability behaviour
+
+- **Auto-wait on navigate**: after `goto`, waits for the DOM to go quiet
+  (default 500 ms, capped 3 s). `networkidle` is never the default — on sites
+  with websockets/long-polling/analytics it may never fire. Use `waitUntil:"none"`
+  to skip the settle.
+- **Auto-wait on click**: keeps Playwright's native actionability wait and adds a
+  post-click settle (default 300 ms, capped 3 s) so SPA re-renders stabilise
+  before the call returns — no manual `wait_for` needed.
+- **iframe & shadow DOM**: selectors resolve across child frames; open shadow
+  roots are pierced natively by Playwright's CSS engine.
+
+### Known limitations
+
+- **Closed shadow roots** cannot be pierced (browser security) — not supported.
+- `browser_mark_page` uses `querySelectorAll`, which does **not** descend into
+  shadow roots, so shadow-DOM controls are not numbered (they remain reachable
+  by direct CSS selector for click/type).
+- Cross-frame elements use a **native** click/hover (not the ghost-cursor
+  trajectory); the human cursor path applies to main-frame elements only.
+- `networkidle` is opt-in, never default (see above).
+
+---
+
+## Tests
+
+A deterministic local fixture (form, a button rendered after 800 ms, an iframe
+with a field, and an open-shadow-root web component) exercises every tool:
+
+```bash
+npm install
+npx playwright install chromium --with-deps
+npm test            # builds, then runs test/run.mjs against test/fixture.html
+```
+
+A local fixture is used (not a public site) for determinism: no captcha, no
+network flakiness. Current status: **19/19 assertions pass**.
 
 ---
 
