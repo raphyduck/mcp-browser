@@ -4,6 +4,7 @@ import { humanDelay, typingDelay, randomPause, sleep, scrollChunk } from './util
 import { config } from './config.js';
 import { markFrame, clearOverlay, MarkedItem } from './som.js';
 import { waitForSettle } from './wait.js';
+import { precheckSelector, classifyError } from './errors.js';
 
 const DEFAULT_TIMEOUT = config.defaultTimeout;
 
@@ -53,15 +54,17 @@ async function withErrorScreenshot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-function makeErrorResponse(err: unknown): { content: { type: string; text: string }[]; __screenshot?: string } {
-  const message = err instanceof Error ? err.message : String(err);
-  const response: any = {
-    content: [{ type: 'text', text: `Error: ${message}` }],
+function makeErrorResponse(err: unknown): { content: any[] } {
+  const info = classifyError(err);
+  const body = {
+    ok: false,
+    error: { code: info.code, message: info.message, ...info.details },
   };
+  const content: any[] = [{ type: 'text', text: JSON.stringify(body) }];
   if ((err as any).__screenshot) {
-    response.content.push({ type: 'image', data: (err as any).__screenshot, mimeType: 'image/png' });
+    content.push({ type: 'image', data: (err as any).__screenshot, mimeType: 'image/png' });
   }
-  return response;
+  return { content };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -248,7 +251,7 @@ export async function browserWaitFor(args: { selector: string; timeout?: number;
 export async function browserClick(args: { selector: string; button?: string; settle_ms?: number }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
+    await precheckSelector(page, args.selector, { unique: true, visible: true, timeout: DEFAULT_TIMEOUT });
 
     const urlBefore = page.url();
     const cursor = await browserManager.getCursor();
@@ -268,7 +271,7 @@ export async function browserClick(args: { selector: string; button?: string; se
 export async function browserType(args: { selector: string; text: string; clearFirst?: boolean }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
+    await precheckSelector(page, args.selector, { unique: true, visible: true, timeout: DEFAULT_TIMEOUT });
     const urlBefore = page.url();
 
     const cursor = await browserManager.getCursor();
@@ -301,7 +304,7 @@ export async function browserClearAndType(args: { selector: string; text: string
 export async function browserSelect(args: { selector: string; value: string }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
+    await precheckSelector(page, args.selector, { unique: true, visible: true, timeout: DEFAULT_TIMEOUT });
     const urlBefore = page.url();
     await page.selectOption(args.selector, args.value);
     await humanDelay();
@@ -312,7 +315,7 @@ export async function browserSelect(args: { selector: string; value: string }) {
 export async function browserHover(args: { selector: string }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
+    await precheckSelector(page, args.selector, { unique: true, visible: true, timeout: DEFAULT_TIMEOUT });
     const cursor = await browserManager.getCursor();
     await cursor.actions.move({ targetElem: args.selector });
     await humanDelay();
