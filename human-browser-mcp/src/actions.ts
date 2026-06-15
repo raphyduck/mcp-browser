@@ -13,6 +13,26 @@ function frameLabel(frame: Frame, isMain: boolean, index: number): string {
   return frame.name() || frame.url() || `frame-${index}`;
 }
 
+/**
+ * Compact structured state returned by every mutating action, so callers know
+ * what happened without a separate get_url / get_content round-trip.
+ */
+async function stateResult(urlBefore: string, extraNote?: string) {
+  const page = await browserManager.getPage();
+  const url = page.url();
+  const navigated = url !== urlBefore;
+  let title = '';
+  try {
+    title = await page.title();
+  } catch {
+    /* title unavailable mid-transition */
+  }
+  const state: Record<string, unknown> = { ok: true, url, title, navigated };
+  const note = extraNote ?? (navigated ? 'URL changed during the action' : undefined);
+  if (note) state.note = note;
+  return { content: [{ type: 'text', text: JSON.stringify(state) }] };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -55,6 +75,7 @@ export async function browserNavigate(args: {
 }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
+    const urlBefore = page.url();
     const mode = args.waitUntil ?? 'domcontentloaded';
 
     // 'none' → return as soon as navigation commits, no load-state or settle wait.
@@ -70,7 +91,7 @@ export async function browserNavigate(args: {
     }
 
     await humanDelay();
-    return { content: [{ type: 'text', text: `Navigated to ${page.url()}` }] };
+    return stateResult(urlBefore);
   }).catch(makeErrorResponse);
 }
 
@@ -229,6 +250,7 @@ export async function browserClick(args: { selector: string; button?: string; se
     const page = await browserManager.getPage();
     await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
 
+    const urlBefore = page.url();
     const cursor = await browserManager.getCursor();
     await cursor.actions.move({ targetElem: args.selector });
     await cursor.actions.click();
@@ -239,7 +261,7 @@ export async function browserClick(args: { selector: string; button?: string; se
     await waitForSettle(page, settle, config.clickSettleCapMs);
 
     await humanDelay();
-    return { content: [{ type: 'text', text: `Clicked "${args.selector}"` }] };
+    return stateResult(urlBefore);
   }).catch(makeErrorResponse);
 }
 
@@ -247,6 +269,7 @@ export async function browserType(args: { selector: string; text: string; clearF
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
     await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
+    const urlBefore = page.url();
 
     const cursor = await browserManager.getCursor();
     await cursor.actions.move({ targetElem: args.selector });
@@ -267,7 +290,7 @@ export async function browserType(args: { selector: string; text: string; clearF
     }
 
     await humanDelay();
-    return { content: [{ type: 'text', text: `Typed ${args.text.length} characters into "${args.selector}"` }] };
+    return stateResult(urlBefore, `Typed ${args.text.length} characters`);
   }).catch(makeErrorResponse);
 }
 
@@ -279,9 +302,10 @@ export async function browserSelect(args: { selector: string; value: string }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
     await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
+    const urlBefore = page.url();
     await page.selectOption(args.selector, args.value);
     await humanDelay();
-    return { content: [{ type: 'text', text: `Selected "${args.value}" in "${args.selector}"` }] };
+    return stateResult(urlBefore, `Selected "${args.value}"`);
   }).catch(makeErrorResponse);
 }
 
@@ -324,12 +348,16 @@ export async function browserScroll(args: { deltaX?: number; deltaY?: number; se
 export async function browserPressKey(args: { key: string; modifiers?: string[] }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
+    const urlBefore = page.url();
     const modifiers = args.modifiers ?? [];
     for (const mod of modifiers) await page.keyboard.down(mod);
     await page.keyboard.press(args.key);
     for (const mod of [...modifiers].reverse()) await page.keyboard.up(mod);
+
+    // A key press (Enter, etc.) may trigger navigation — let it settle briefly.
+    await waitForSettle(page, config.clickSettleMs, config.clickSettleCapMs);
     await humanDelay();
-    return { content: [{ type: 'text', text: `Pressed key "${args.key}"` }] };
+    return stateResult(urlBefore, `Pressed key "${args.key}"`);
   }).catch(makeErrorResponse);
 }
 
