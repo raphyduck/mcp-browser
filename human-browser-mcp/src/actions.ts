@@ -3,6 +3,7 @@ import { browserManager } from './browser.js';
 import { humanDelay, typingDelay, randomPause, sleep, scrollChunk } from './utils.js';
 import { config } from './config.js';
 import { markFrame, clearOverlay, MarkedItem } from './som.js';
+import { waitForSettle } from './wait.js';
 
 const DEFAULT_TIMEOUT = config.defaultTimeout;
 
@@ -47,12 +48,27 @@ function makeErrorResponse(err: unknown): { content: { type: string; text: strin
 // Navigation
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function browserNavigate(args: { url: string; waitUntil?: string }) {
+export async function browserNavigate(args: {
+  url: string;
+  waitUntil?: 'domcontentloaded' | 'load' | 'networkidle' | 'none';
+  settle_ms?: number;
+}) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
-    const waitUntil = (args.waitUntil ?? 'domcontentloaded') as any;
-    await page.goto(args.url, { waitUntil, timeout: DEFAULT_TIMEOUT });
+    const mode = args.waitUntil ?? 'domcontentloaded';
+
+    // 'none' → return as soon as navigation commits, no load-state or settle wait.
+    // networkidle stays opt-in only: on sites with websockets/long-polling/
+    // analytics it may never fire and the call would hang.
+    const gotoWaitUntil = mode === 'none' ? 'commit' : mode;
+    await page.goto(args.url, { waitUntil: gotoWaitUntil as any, timeout: DEFAULT_TIMEOUT });
     browserManager.resetCursor();
+
+    if (mode !== 'none') {
+      const settle = Math.min(args.settle_ms ?? config.navigateSettleMs, config.navigateSettleCapMs);
+      await waitForSettle(page, settle, config.navigateSettleCapMs);
+    }
+
     await humanDelay();
     return { content: [{ type: 'text', text: `Navigated to ${page.url()}` }] };
   }).catch(makeErrorResponse);
@@ -208,7 +224,7 @@ export async function browserWaitFor(args: { selector: string; timeout?: number;
 // Interactions
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function browserClick(args: { selector: string; button?: string }) {
+export async function browserClick(args: { selector: string; button?: string; settle_ms?: number }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
     await page.waitForSelector(args.selector, { timeout: DEFAULT_TIMEOUT, state: 'visible' });
@@ -216,6 +232,11 @@ export async function browserClick(args: { selector: string; button?: string }) 
     const cursor = await browserManager.getCursor();
     await cursor.actions.move({ targetElem: args.selector });
     await cursor.actions.click();
+
+    // Post-click settle: if the click triggers a SPA navigation or re-render,
+    // wait for the DOM to go quiet (capped) instead of returning immediately.
+    const settle = Math.min(args.settle_ms ?? config.clickSettleMs, config.clickSettleCapMs);
+    await waitForSettle(page, settle, config.clickSettleCapMs);
 
     await humanDelay();
     return { content: [{ type: 'text', text: `Clicked "${args.selector}"` }] };

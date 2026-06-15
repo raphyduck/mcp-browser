@@ -48,8 +48,13 @@ const TOOLS = [
         url: { type: 'string', description: 'Target URL' },
         waitUntil: {
           type: 'string',
-          enum: ['load', 'domcontentloaded', 'networkidle', 'commit'],
-          description: 'When to consider navigation done (default: domcontentloaded)',
+          enum: ['domcontentloaded', 'load', 'networkidle', 'none'],
+          description:
+            "Load state to wait for (default: domcontentloaded, then a DOM settle). 'none' returns on commit with no settle. 'networkidle' is opt-in only — it may never fire on sites with websockets/long-polling.",
+        },
+        settle_ms: {
+          type: 'number',
+          description: 'Override the post-load DOM-settle window in ms (default 500, capped at 3000)',
         },
       },
       required: ['url'],
@@ -142,6 +147,10 @@ const TOOLS = [
       type: 'object',
       properties: {
         selector: { type: 'string', description: 'CSS selector of element to click' },
+        settle_ms: {
+          type: 'number',
+          description: 'Post-click DOM-settle window in ms (default 300, capped at 3000)',
+        },
       },
       required: ['selector'],
     },
