@@ -20,7 +20,7 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
   "optionalDependencies": {
-    "@capsolver/capsolver-npm": "^2.0.0"
+    "@captcha-libs/capsolver": "^2.1.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

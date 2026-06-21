@@ -455,7 +455,7 @@ export async function browserClearCookies(_args: Record<string, never>) {
 // CapSolver (optional)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function browserSolveCaptcha(args: { type?: string }) {
+export async function browserSolveCaptcha(args: { type?: string; websiteKey?: string; isInvisible?: boolean }) {
   const apiKey = process.env.CAPSOLVER_API_KEY;
   if (!apiKey) {
     return { content: [{ type: 'text', text: 'CAPSOLVER_API_KEY is not set' }] };
@@ -475,13 +475,86 @@ export async function browserSolveCaptcha(args: { type?: string }) {
 
     const page = await browserManager.getPage();
     const url = page.url();
-    const captchaType = args.type ?? 'auto';
+    const isInvisible = args.isInvisible ?? false;
 
-    const capsolver = new Capsolver({ apiKey });
-    const solution = await capsolver.solve({
-      type: captchaType,
-      websiteURL: url,
+    // Get sitekey: use provided key OR extract from page DOM + iframes
+    let sitekey = args.websiteKey ?? '';
+    if (!sitekey) {
+      sitekey = await page.evaluate(() => {
+        const el = document.querySelector('[data-sitekey], .g-recaptcha, [data-hcaptcha-sitekey]') as HTMLElement | null;
+        if (el) return el.getAttribute('data-sitekey') || el.getAttribute('data-hcaptcha-sitekey') || '';
+        const iframes = [...document.querySelectorAll('iframe[src*="recaptcha"], iframe[src*="hcaptcha"]')] as HTMLIFrameElement[];
+        for (const iframe of iframes) {
+          const match = iframe.src.match(/[?&]k=([^&]+)/);
+          if (match) return match[1];
+        }
+        return '';
+      });
+    }
+
+    if (!sitekey) {
+      return { content: [{ type: 'text', text: 'No captcha sitekey found. Pass websiteKey parameter explicitly.' }] };
+    }
+
+    // Map type to CapSolver task type
+    const captchaType = args.type ?? 'ReCaptchaV2Task';
+    const taskTypeMap: Record<string, string> = {
+      'ReCaptchaV2Task': 'ReCaptchaV2TaskProxyLess',
+      'ReCaptchaV2TaskProxyLess': 'ReCaptchaV2TaskProxyLess',
+      'ReCaptchaV3Task': 'ReCaptchaV3TaskProxyLess',
+      'HCaptchaTask': 'HCaptchaTaskProxyLess',
+      'AntiTurnstileTask': 'AntiTurnstileTaskProxyLess',
+    };
+    const taskType = taskTypeMap[captchaType] ?? 'ReCaptchaV2TaskProxyLess';
+
+    // Direct HTTP calls to CapSolver API (no third-party package)
+    const createResp = await fetch('https://api.capsolver.com/createTask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientKey: apiKey,
+        task: { type: taskType, websiteURL: url, websiteKey: sitekey, isInvisible },
+      }),
     });
+    const createData: any = await createResp.json();
+    if (createData.errorId !== 0) {
+      return { content: [{ type: 'text', text: `CapSolver error: ${createData.errorDescription}` }] };
+    }
+
+    const taskId = createData.taskId;
+    let solution: any = null;
+    for (let i = 0; i < 40; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      const resultResp = await fetch('https://api.capsolver.com/getTaskResult', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientKey: apiKey, taskId }),
+      });
+      const result: any = await resultResp.json();
+      if (result.status === 'ready') { solution = result.solution; break; }
+      if (result.status === 'failed') {
+        return { content: [{ type: 'text', text: `CapSolver failed: ${JSON.stringify(result)}` }] };
+      }
+    }
+
+    if (!solution) {
+      return { content: [{ type: 'text', text: 'CapSolver timeout after 120s' }] };
+    }
+
+    // Inject token into page
+    if (solution.gRecaptchaResponse) {
+      await page.evaluate((token: string) => {
+        const textareas = document.querySelectorAll('textarea[name="g-recaptcha-response"]') as NodeListOf<HTMLTextAreaElement>;
+        textareas.forEach(ta => { ta.style.display = 'block'; ta.value = token; });
+        try {
+          const rc = (window as any).___grecaptcha_cfg?.clients;
+          if (rc) Object.values(rc).forEach((client: any) => {
+            const cb = client?.['']?.['']?.callback || client?.callback;
+            if (typeof cb === 'function') try { cb(token); } catch(e) {}
+          });
+        } catch(e) {}
+      }, solution.gRecaptchaResponse);
+    }
 
     return { content: [{ type: 'text', text: `Captcha solved: ${JSON.stringify(solution)}` }] };
   }).catch(makeErrorResponse);

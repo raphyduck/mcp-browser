@@ -8,6 +8,8 @@ import {
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import { randomUUID, randomBytes, createHash } from 'crypto';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 import {
   browserNavigate,
@@ -32,6 +34,7 @@ import {
   browserClearCookies,
   browserSolveCaptcha,
 } from './actions.js';
+import { browserManager, sessionStore } from './browser.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool definitions
@@ -314,7 +317,17 @@ const TOOLS = [
         type: {
           type: 'string',
           description:
-            'Captcha type: ReCaptchaV2Task, ReCaptchaV3Task, HCaptchaTask, AntiTurnstileTask, or "auto"',
+            'Captcha type: ReCaptchaV2Task, ReCaptchaV3Task, HCaptchaTask, AntiTurnstileTask',
+        },
+        websiteKey: {
+          type: 'string',
+          description:
+            'Optional: provide the captcha sitekey directly instead of auto-detecting from DOM',
+        },
+        isInvisible: {
+          type: 'boolean',
+          description:
+            'Optional: set to true for invisible reCaptcha v2 (default: false)',
         },
       },
     },
@@ -355,6 +368,16 @@ const ACTIONS: Record<string, ActionFn> = {
 // MCP Server factory (one instance per HTTP session, shared singleton browser)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Per-session FIFO mutex + async context: a single chat's calls serialize on
+// their own tab, while different chats (sessions) run in parallel.
+const sessionChains = new Map<string, Promise<unknown>>();
+function runForSession<T>(sessionId: string, fn: () => Promise<T> | T): Promise<T> {
+  const prev = sessionChains.get(sessionId) ?? Promise.resolve();
+  const run = prev.then(() => sessionStore.run(sessionId, () => Promise.resolve(fn())));
+  sessionChains.set(sessionId, run.then(() => {}, () => {}));
+  return run;
+}
+
 function createMCPServer(): Server {
   const server = new Server(
     { name: 'human-browser', version: '1.0.0' },
@@ -363,7 +386,7 @@ function createMCPServer(): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     const action = ACTIONS[name];
     if (!action) {
@@ -372,7 +395,8 @@ function createMCPServer(): Server {
         isError: true,
       };
     }
-    return action(args ?? {});
+    const sessionId = ((extra as any)?.sessionId as string) ?? 'default';
+    return runForSession(sessionId, () => action(args ?? {}));
   });
 
   return server;
@@ -401,7 +425,52 @@ interface AuthCodeEntry {
 }
 
 const authCodes = new Map<string, AuthCodeEntry>();
-const accessTokens = new Map<string, number>(); // token → expiresAt
+
+// ── Persistent access-token store ────────────────────────────────────────────
+// Tokens live for 24h but the process can restart (crash, redeploy). Keeping
+// them only in memory means every restart silently logs the client out. We
+// persist to the mounted profile volume so tokens survive restarts.
+const TOKEN_STORE_PATH = process.env.TOKEN_STORE_PATH ?? '/app/profile/oauth-tokens.json';
+
+function loadAccessTokens(): Map<string, number> {
+  try {
+    if (existsSync(TOKEN_STORE_PATH)) {
+      const raw = JSON.parse(readFileSync(TOKEN_STORE_PATH, 'utf8')) as Record<string, number>;
+      const now = Date.now();
+      const m = new Map<string, number>();
+      for (const [t, exp] of Object.entries(raw)) {
+        if (exp > now) m.set(t, exp); // drop already-expired tokens on load
+      }
+      process.stderr.write(`[oauth] loaded ${m.size} access token(s) from disk\n`);
+      return m;
+    }
+  } catch (err) {
+    process.stderr.write(`[oauth] failed to load tokens: ${err}\n`);
+  }
+  return new Map<string, number>();
+}
+
+const accessTokens = loadAccessTokens();
+
+let persistTimer: NodeJS.Timeout | null = null;
+function persistAccessTokens(): void {
+  // debounce: coalesce rapid writes into one disk flush
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    try {
+      mkdirSync(dirname(TOKEN_STORE_PATH), { recursive: true });
+      const now = Date.now();
+      const obj: Record<string, number> = {};
+      for (const [t, exp] of accessTokens.entries()) {
+        if (exp > now) obj[t] = exp;
+      }
+      writeFileSync(TOKEN_STORE_PATH, JSON.stringify(obj), 'utf8');
+    } catch (err) {
+      process.stderr.write(`[oauth] failed to persist tokens: ${err}\n`);
+    }
+  }, 250);
+}
 
 function generateToken(): string {
   return randomBytes(32).toString('hex');
@@ -449,6 +518,7 @@ async function startHttp(): Promise<void> {
     if (expiresAt !== undefined) {
       if (Date.now() > expiresAt) {
         accessTokens.delete(token);
+        persistAccessTokens(); // after delete
         res.status(401).json({ error: 'invalid_token', error_description: 'Token expired' });
         return;
       }
@@ -568,6 +638,7 @@ async function startHttp(): Promise<void> {
 
     const accessToken = generateToken();
     accessTokens.set(accessToken, Date.now() + 86_400_000); // 24 h
+    persistAccessTokens(); // after set
 
     res.json({
       access_token: accessToken,
@@ -608,7 +679,11 @@ async function startHttp(): Promise<void> {
           storedId = id;
           sessions.set(id, transport);
           transport.onclose = () => {
-            if (storedId) sessions.delete(storedId);
+            if (storedId) {
+              sessions.delete(storedId);
+              sessionChains.delete(storedId);
+              void browserManager.closeSession(storedId);
+            }
           };
         },
       });
@@ -632,6 +707,19 @@ async function startHttp(): Promise<void> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Entry point
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Global safety net: never let a rejected promise or stray error kill the
+// process. Playwright throws "Execution context was destroyed" when JS is
+// evaluated during a navigation; that must not crash the whole MCP server
+// (a crash restarts the container and wipes OAuth tokens in memory).
+// ─────────────────────────────────────────────────────────────────────────────
+process.on('unhandledRejection', (reason) => {
+  process.stderr.write(`[unhandledRejection] ${reason instanceof Error ? reason.stack : String(reason)}\n`);
+});
+process.on('uncaughtException', (err) => {
+  process.stderr.write(`[uncaughtException] ${err instanceof Error ? err.stack : String(err)}\n`);
+});
 
 async function main(): Promise<void> {
   const mode = process.env.MCP_TRANSPORT ?? 'stdio';

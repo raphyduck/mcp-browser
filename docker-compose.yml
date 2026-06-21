@@ -1,3 +1,8 @@
+networks:
+  default:
+  mcp_edge:
+    external: true
+
 services:
   human-browser-mcp:
     image: human-browser-mcp:latest
@@ -12,12 +17,17 @@ services:
       - OAUTH_CLIENT_SECRET=${OAUTH_CLIENT_SECRET}
       - OAUTH_ISSUER=${OAUTH_ISSUER:-https://brmcp.hobbitton.at}
       - BROWSER_TIMEOUT=30000
-    ports:
-      - "3000:3000"
+      - CAPSOLVER_API_KEY=${CAPSOLVER_API_KEY:-}
     volumes:
       - browser_profile:/app/profile
     restart: unless-stopped
     shm_size: '2gb'
+    networks:
+      - default
+      - mcp_edge
+    labels:
+      caddy: http://brmcp.hobbitton.at
+      caddy.reverse_proxy: "{{upstreams 3000}}"
 
 volumes:
   browser_profile:

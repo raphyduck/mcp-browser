@@ -2,10 +2,18 @@ import { chromium } from 'playwright-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import type { BrowserContext, Page } from 'playwright';
 import { createCursor, Cursor } from 'ghost-cursor-playwright';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import * as path from 'path';
 import * as fs from 'fs';
 
 chromium.use(StealthPlugin());
+
+// Carries the MCP sessionId down to getPage()/getCursor() without changing
+// the (argument-less) call sites in actions.ts.
+export const sessionStore = new AsyncLocalStorage<string>();
+function currentSession(): string {
+  return sessionStore.getStore() ?? 'default';
+}
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -49,8 +57,11 @@ const INIT_SCRIPT = `
 class BrowserManager {
   private static instance: BrowserManager;
   private context: BrowserContext | null = null;
-  private _page: Page | null = null;
-  private cursor: Cursor | null = null;
+  private initPromise: Promise<void> | null = null;
+  private pages = new Map<string, Page>();
+  private cursors = new Map<string, Cursor>();
+  private lastUsed = new Map<string, number>();
+  private freePages: Page[] = [];
 
   private constructor() {}
 
@@ -61,23 +72,54 @@ class BrowserManager {
     return BrowserManager.instance;
   }
 
+  private async ensureContext(): Promise<void> {
+    if (this.context) return;
+    if (!this.initPromise) this.initPromise = this.init();
+    await this.initPromise;
+  }
+
   async getPage(): Promise<Page> {
-    if (!this.context || !this._page) {
-      await this.init();
+    await this.ensureContext();
+    const id = currentSession();
+    let page = this.pages.get(id);
+    if (!page || page.isClosed()) {
+      page = this.freePages.shift() ?? (await this.context!.newPage());
+      this.pages.set(id, page);
+      this.cursors.delete(id);
+      page.on('framenavigated', () => this.resetCursor(id));
+      page.on('close', () => {
+        this.pages.delete(id);
+        this.cursors.delete(id);
+        this.lastUsed.delete(id);
+      });
     }
-    return this._page!;
+    this.lastUsed.set(id, Date.now());
+    return page;
   }
 
   async getCursor(): Promise<Cursor> {
+    const id = currentSession();
     const page = await this.getPage();
-    if (!this.cursor) {
-      this.cursor = await createCursor(page);
+    let cursor = this.cursors.get(id);
+    if (!cursor) {
+      cursor = await createCursor(page);
+      this.cursors.set(id, cursor);
     }
-    return this.cursor;
+    return cursor;
   }
 
-  resetCursor(): void {
-    this.cursor = null;
+  resetCursor(id?: string): void {
+    this.cursors.delete(id ?? currentSession());
+  }
+
+  async closeSession(id: string): Promise<void> {
+    const page = this.pages.get(id);
+    this.pages.delete(id);
+    this.cursors.delete(id);
+    this.lastUsed.delete(id);
+    if (page && !page.isClosed()) {
+      try { await page.close(); } catch { /* ignore */ }
+    }
   }
 
   private async init(): Promise<void> {
@@ -115,16 +157,27 @@ class BrowserManager {
     this.context!.setDefaultTimeout(timeout);
     await this.context!.addInitScript(INIT_SCRIPT);
 
-    const pages = this.context!.pages();
-    this._page = pages.length > 0 ? pages[0] : await this.context!.newPage();
-    this._page.on('framenavigated', () => this.resetCursor());
+    // Reuse whatever blank page(s) the persistent context opened with.
+    this.freePages = this.context!.pages();
+
+    // Idle tab reaper: close pages unused beyond PAGE_IDLE_MS (default 15 min).
+    const idleMs = parseInt(process.env.PAGE_IDLE_MS ?? '900000', 10);
+    setInterval(() => {
+      const now = Date.now();
+      for (const [id, t] of this.lastUsed) {
+        if (now - t > idleMs) void this.closeSession(id);
+      }
+    }, 60_000).unref();
   }
 
   async close(): Promise<void> {
     await this.context?.close();
     this.context = null;
-    this._page = null;
-    this.cursor = null;
+    this.initPromise = null;
+    this.pages.clear();
+    this.cursors.clear();
+    this.lastUsed.clear();
+    this.freePages = [];
   }
 
   getContext(): BrowserContext | null {

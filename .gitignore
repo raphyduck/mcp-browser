@@ -1,0 +1,17 @@
+# Secrets — ne jamais committer
+.env
+*.env
+
+# Backups locaux
+*.bak
+*.bak-*
+*-premigration
+src.bak-*/
+**/src.bak-*/
+**/*.bak-*
+
+# Runtime / build
+node_modules/
+dist/
+profile/
+*.js.map
