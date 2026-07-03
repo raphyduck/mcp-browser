@@ -63,6 +63,23 @@ export async function resolveTarget(
   selector: string,
   opts: { frame?: string; timeout: number; unique?: boolean; visible?: boolean }
 ): Promise<ResolvedTarget> {
+  // aria-ref shortcut: refs (eN / fNeN) come from browser_snapshot and resolve
+  // against the main frame's last snapshot; they pierce iframes natively.
+  const refMatch = selector.match(/^\s*(?:aria-ref=|ref=)?((?:f\d+)?e\d+)\s*$/i);
+  if (refMatch) {
+    const refSelector = `aria-ref=${refMatch[1]}`;
+    const locator = page.mainFrame().locator(refSelector);
+    try {
+      await locator.first().waitFor({ state: 'attached', timeout: opts.timeout });
+    } catch {
+      throw new ActionError(
+        'NOT_FOUND',
+        `No element matches ref "${refMatch[1]}". Refs expire when the page changes: take a fresh browser_snapshot and retry.`,
+        { selector }
+      );
+    }
+    return { frame: page.mainFrame(), label: 'main', isMain: true, locator };
+  }
   let candidates: FrameCandidate[];
   if (opts.frame !== undefined && opts.frame !== '') {
     const hit = findFrameByHint(page, opts.frame);

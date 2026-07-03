@@ -20,6 +20,7 @@ import {
   browserGetContent,
   browserScreenshot,
   browserMarkPage,
+  browserSnapshot,
   browserWaitFor,
   browserClick,
   browserType,
@@ -120,6 +121,25 @@ const TOOLS = [
         max_elements: {
           type: 'number',
           description: 'Safety cap on the number of marked elements (default 200)',
+        },
+      },
+    },
+  },
+  {
+    name: 'browser_snapshot',
+    description:
+      'Accessibility-tree snapshot of the page (YAML, AI mode): roles, accessible names and element refs [ref=eN], including iframes. Cheaper and more reliable than screenshots for planning actions. Use any ref directly as the selector of click/type/hover/select tools (e.g. selector "e12" or "ref=e12"). Refs expire when the page changes: re-snapshot after navigation.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: {
+          type: 'string',
+          description: 'CSS selector to scope the snapshot (optional, defaults to body)',
+        },
+        depth: { type: 'number', description: 'Limit tree depth (optional)' },
+        boxes: {
+          type: 'boolean',
+          description: 'Append viewport bounding boxes [box=x,y,w,h] to each element (default false)',
         },
       },
     },
@@ -349,6 +369,7 @@ const ACTIONS: Record<string, ActionFn> = {
   browser_get_content: browserGetContent,
   browser_screenshot: browserScreenshot,
   browser_mark_page: browserMarkPage,
+  browser_snapshot: browserSnapshot,
   browser_wait_for: browserWaitFor,
   browser_click: browserClick,
   browser_type: browserType,

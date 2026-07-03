@@ -559,3 +559,29 @@ export async function browserSolveCaptcha(args: { type?: string; websiteKey?: st
     return { content: [{ type: 'text', text: `Captcha solved: ${JSON.stringify(solution)}` }] };
   }).catch(makeErrorResponse);
 }
+
+export async function browserSnapshot(args: { selector?: string; depth?: number; boxes?: boolean }) {
+  return withErrorScreenshot(async () => {
+    const page = await browserManager.getPage();
+    const target = page.locator(args.selector || 'body');
+    const snapshot = await target.ariaSnapshot({
+      mode: 'ai',
+      ...(args.depth ? { depth: args.depth } : {}),
+      ...(args.boxes ? { boxes: true } : {}),
+      timeout: DEFAULT_TIMEOUT,
+    });
+    let title = '';
+    try {
+      title = await page.title();
+    } catch {
+      /* ignore */
+    }
+    const state = { ok: true, url: page.url(), title };
+    return {
+      content: [
+        { type: 'text', text: JSON.stringify(state) },
+        { type: 'text', text: snapshot },
+      ],
+    };
+  }).catch(makeErrorResponse);
+}
