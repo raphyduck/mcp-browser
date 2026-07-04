@@ -34,6 +34,7 @@ import {
   browserSetCookies,
   browserClearCookies,
   browserSolveCaptcha,
+  browserSolveCloudflare,
 } from './actions.js';
 import { browserManager, sessionStore } from './browser.js';
 
@@ -59,6 +60,10 @@ const TOOLS = [
         settle_ms: {
           type: 'number',
           description: 'Override the post-load DOM-settle window in ms (default 500, capped at 3000)',
+        },
+        solve_cloudflare: {
+          type: 'boolean',
+          description: "Resout automatiquement un challenge Cloudflare apres navigation (defaut true). Mettre false pour desactiver.",
         },
       },
       required: ['url'],
@@ -352,6 +357,11 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: 'browser_solve_cloudflare',
+    description: "Resout le challenge Cloudflare 'Un instant...' de la page courante via CapSolver (relais + IP FR partagee) et injecte le cf_clearance partitionne, puis recharge. browser_navigate le fait deja automatiquement ; cet outil sert a forcer/retenter manuellement. Optionnel: 'url' pour cibler une URL precise.",
+    inputSchema: { type: 'object', properties: { url: { type: 'string', description: 'URL cible du challenge (defaut: page courante)' } } },
+  },
 ];
 
 // ── Multi-session : parametre `tab` injecte dans chaque outil ────────────────
@@ -401,6 +411,7 @@ const ACTIONS: Record<string, ActionFn> = {
   browser_set_cookies: browserSetCookies,
   browser_clear_cookies: browserClearCookies,
   browser_solve_captcha: browserSolveCaptcha,
+  browser_solve_cloudflare: browserSolveCloudflare,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

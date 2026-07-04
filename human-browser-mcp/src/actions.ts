@@ -6,6 +6,7 @@ import { markFrame, clearOverlay, MarkedItem } from './som.js';
 import { waitForSettle } from './wait.js';
 import { classifyError } from './errors.js';
 import { resolveTarget } from './frames.js';
+import { solveCloudflare, isCloudflareChallenge } from './cloudflare.js';
 
 const DEFAULT_TIMEOUT = config.defaultTimeout;
 
@@ -76,6 +77,7 @@ export async function browserNavigate(args: {
   url: string;
   waitUntil?: 'domcontentloaded' | 'load' | 'networkidle' | 'none';
   settle_ms?: number;
+  solve_cloudflare?: boolean;
 }) {
   return withErrorScreenshot(async () => {
     const page = await browserManager.getPage();
@@ -92,6 +94,13 @@ export async function browserNavigate(args: {
     if (mode !== 'none') {
       const settle = Math.min(args.settle_ms ?? config.navigateSettleMs, config.navigateSettleCapMs);
       await waitForSettle(page, settle, config.navigateSettleCapMs);
+    }
+
+    // Contournement automatique du challenge Cloudflare (sauf si desactive).
+    if (args.solve_cloudflare !== false) {
+      for (let attempt = 0; attempt < 2 && (await isCloudflareChallenge(page)); attempt++) {
+        await solveCloudflare(page, args.url);
+      }
     }
 
     await humanDelay();
@@ -126,6 +135,17 @@ export async function browserRefresh(_args: Record<string, never>) {
     browserManager.resetCursor();
     await humanDelay();
     return { content: [{ type: 'text', text: `Refreshed ${page.url()}` }] };
+  }).catch(makeErrorResponse);
+}
+
+export async function browserSolveCloudflare(args: { url?: string }) {
+  return withErrorScreenshot(async () => {
+    const page = await browserManager.getPage();
+    if (!(await isCloudflareChallenge(page)) && !args.url) {
+      return { content: [{ type: 'text', text: 'Aucun challenge Cloudflare detecte sur la page courante.' }] };
+    }
+    const r = await solveCloudflare(page, args.url);
+    return { content: [{ type: 'text', text: `${r.note} (url=${page.url()})` }] };
   }).catch(makeErrorResponse);
 }
 

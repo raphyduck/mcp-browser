@@ -21,6 +21,7 @@ services:
       - PROXY_SERVER=${PROXY_SERVER:-}
       - PROXY_USERNAME=${PROXY_USERNAME:-}
       - PROXY_PASSWORD=${PROXY_PASSWORD:-}
+      - RELAY_PUBLIC=${RELAY_PUBLIC:-}
     volumes:
       - browser_profile:/app/profile
     restart: unless-stopped
