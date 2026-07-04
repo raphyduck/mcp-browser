@@ -74,9 +74,27 @@ class BrowserManager {
   }
 
   private async ensureContext(): Promise<void> {
-    if (this.context) return;
+    // Contexte encore vivant ? (un crash de Chrome ferme le contexte : browser() devient
+    // null ou deconnecte). Si mort, on reinitialise au lieu de renvoyer un contexte inutilisable.
+    if (this.context) {
+      const br = this.context.browser();
+      if (br && br.isConnected()) return;
+      // contexte mort -> reset pour forcer une nouvelle init
+      this.context = null;
+      this.initPromise = null;
+      this.pages.clear();
+      this.cursors.clear();
+      this.lastUsed.clear();
+      this.freePages = [];
+    }
     if (!this.initPromise) this.initPromise = this.init();
-    await this.initPromise;
+    try {
+      await this.initPromise;
+    } catch (e) {
+      // init ratee : ne pas cacher une promesse rejetee (sinon on rejoue l'erreur a vie)
+      this.initPromise = null;
+      throw e;
+    }
   }
 
   async getPage(): Promise<Page> {
@@ -164,6 +182,17 @@ class BrowserManager {
 
     this.context!.setDefaultTimeout(timeout);
     await this.context!.addInitScript(INIT_SCRIPT);
+
+    // Auto-reset si le contexte se ferme (crash Chrome, disconnect) : la prochaine
+    // action relancera une init propre au lieu de rester bloquee sur un contexte mort.
+    this.context!.on('close', () => {
+      this.context = null;
+      this.initPromise = null;
+      this.pages.clear();
+      this.cursors.clear();
+      this.lastUsed.clear();
+      this.freePages = [];
+    });
 
     // Reuse whatever blank page(s) the persistent context opened with.
     this.freePages = this.context!.pages();
