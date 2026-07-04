@@ -354,6 +354,24 @@ const TOOLS = [
   },
 ];
 
+// ── Multi-session : parametre `tab` injecte dans chaque outil ────────────────
+// La passerelle MCP (claude.ai) est stateless : elle regenere un mcp-session-id
+// a CHAQUE appel d'outil et n'envoie aucun identifiant stable de conversation.
+// Le serveur ne peut donc pas deviner a quelle session appartient un appel.
+// Solution : l'appelant fournit un identifiant `tab` (ex: un nom stable par
+// conversation) et le REUTILISE. Meme `tab` => meme onglet (continuite) ;
+// `tab` differents => onglets isoles (plusieurs sessions en parallele).
+// Sans `tab`, tout retombe sur l'onglet 'default' partage.
+for (const t of TOOLS as any[]) {
+  t.inputSchema = t.inputSchema || { type: 'object', properties: {} };
+  t.inputSchema.properties = t.inputSchema.properties || {};
+  t.inputSchema.properties.tab = {
+    type: 'string',
+    description:
+      "Identifiant d'onglet/session. Passe une valeur stable et REUTILISE-la a chaque appel d'une meme session de navigation (ex: un slug de la tache). Meme tab => meme onglet ; tabs differents => onglets isoles pour du parallele. Omis => onglet 'default' partage.",
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Dispatch table
 // ─────────────────────────────────────────────────────────────────────────────
@@ -416,8 +434,11 @@ function createMCPServer(): Server {
         isError: true,
       };
     }
-    const sessionId = ((extra as any)?.sessionId as string) ?? 'default';
-    return runForSession(sessionId, () => action(args ?? {}));
+    const a: any = args ?? {};
+    const tabId: string = (typeof a.tab === 'string' && a.tab.trim()) ? a.tab.trim() : 'default';
+    // On retire `tab` avant de passer les args a l'action (evite d'interferer avec ses champs).
+    if ('tab' in a) { delete a.tab; }
+    return runForSession(tabId, () => action(a));
   });
 
   return server;

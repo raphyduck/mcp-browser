@@ -16,6 +16,7 @@
     "express": "^4.19.2",
     "ghost-cursor-playwright": "^1.0.3",
     "playwright": "^1.44.0",
+    "patchright": "^1.61.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   },

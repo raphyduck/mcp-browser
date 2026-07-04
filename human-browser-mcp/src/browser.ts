@@ -1,22 +1,23 @@
-import { chromium } from 'playwright-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { chromium } from 'patchright';
 import type { BrowserContext, Page } from 'playwright';
 import { createCursor, Cursor } from 'ghost-cursor-playwright';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import * as path from 'path';
 import * as fs from 'fs';
 
-chromium.use(StealthPlugin());
 
 // Carries the MCP sessionId down to getPage()/getCursor() without changing
 // the (argument-less) call sites in actions.ts.
 export const sessionStore = new AsyncLocalStorage<string>();
 function currentSession(): string {
+  // Le tabId est pose dans l'AsyncLocalStorage par runForSession (dispatch index.ts),
+  // a partir du parametre `tab` fourni par l'appelant. Meme tab => meme onglet ;
+  // absent => onglet 'default' partage. Cf. commentaire multi-session dans index.ts.
   return sessionStore.getStore() ?? 'default';
 }
 
 const USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.55 Safari/537.36';
 
 const INIT_SCRIPT = `
 (function () {
@@ -50,7 +51,7 @@ const INIT_SCRIPT = `
   }
   Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
   Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-  Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+  Object.defineProperty(navigator, 'platform', { get: () => 'Linux x86_64' });
 })();
 `;
 
@@ -130,27 +131,34 @@ class BrowserManager {
     const slowMo = parseInt(process.env.SLOW_MO ?? '0', 10);
     const timeout = parseInt(process.env.BROWSER_TIMEOUT ?? '30000', 10);
 
+    // Proxy residentiel (Webshare) : lu depuis l'env, absent => pas de proxy.
+    const proxyServer = process.env.PROXY_SERVER;
+    const proxyOpt = proxyServer
+      ? { proxy: { server: proxyServer, username: process.env.PROXY_USERNAME, password: process.env.PROXY_PASSWORD } }
+      : {};
+
     this.context = await (chromium as any).launchPersistentContext(profileDir, {
+      ...proxyOpt,
+      channel: 'chrome',
       headless,
       slowMo,
       viewport: { width: 1920, height: 1080 },
-      userAgent: USER_AGENT,
       locale: 'fr-FR',
       timezoneId: 'Europe/Paris',
       geolocation: { latitude: 48.8566, longitude: 2.3522 },
       permissions: ['geolocation'],
       args: [
-        '--disable-blink-features=AutomationControlled',
-        '--disable-infobars',
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
         '--window-size=1920,1080',
         '--lang=fr-FR',
+        // WebGL logiciel (SwiftShader) : sans GPU sous Xvfb, Chromium desactive WebGL,
+        // et 'pas de WebGL' est un signal bot fort. On force le rendu logiciel ;
+        // le vendor/renderer est ensuite masque en Intel par INIT_SCRIPT.
+        '--use-gl=angle',
+        '--use-angle=swiftshader',
+        '--enable-unsafe-swiftshader',
       ],
     });
 

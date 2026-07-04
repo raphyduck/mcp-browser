@@ -462,17 +462,10 @@ export async function browserSolveCaptcha(args: { type?: string; websiteKey?: st
   }
 
   return withErrorScreenshot(async () => {
-    let Capsolver: any;
-    try {
-      // Dynamic import via a non-literal specifier so the build does not require
-      // the optional package to be installed; the server still works without it.
-      const pkg = '@capsolver/capsolver-npm';
-      const mod: any = await import(pkg);
-      Capsolver = mod.default ?? mod.Capsolver;
-    } catch {
-      return { content: [{ type: 'text', text: '@capsolver/capsolver-npm is not installed' }] };
-    }
-
+    // NOTE: the CapSolver integration below uses direct HTTP calls to
+    // api.capsolver.com and does NOT depend on any npm package. The previous
+    // dynamic import of '@capsolver/capsolver-npm' was dead code that hard-blocked
+    // this whole function whenever that (unused) package was absent. Removed.
     const page = await browserManager.getPage();
     const url = page.url();
     const isInvisible = args.isInvisible ?? false;
