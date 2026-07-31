@@ -15,3 +15,6 @@ node_modules/
 dist/
 profile/
 *.js.map
+*.orig-*
+*.bak.*
+__pycache__/

@@ -5,6 +5,8 @@ networks:
 
 services:
   human-browser-mcp:
+    mem_limit: 1536m
+    memswap_limit: 1536m
     image: human-browser-mcp:latest
     build:
       context: ./human-browser-mcp
