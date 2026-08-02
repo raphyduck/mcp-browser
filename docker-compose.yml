@@ -5,6 +5,7 @@ networks:
 
 services:
   human-browser-mcp:
+    init: true
     mem_limit: 1536m
     memswap_limit: 1536m
     image: human-browser-mcp:latest
