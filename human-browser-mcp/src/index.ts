@@ -525,6 +525,42 @@ function persistAccessTokens(): void {
   }, 250);
 }
 
+// ── Refresh tokens (persisted) ─────────────────────────────────────────────
+// Without refresh tokens the client is logged out every time the access token
+// expires and must be re-authorized by hand. Refresh tokens are long-lived and
+// NOT rotated, so a client retry with the same refresh token never fails.
+const ACCESS_TOKEN_TTL_MS = parseInt(process.env.ACCESS_TOKEN_TTL_MS ?? String(7 * 86_400_000), 10);
+const REFRESH_TOKEN_TTL_MS = parseInt(process.env.REFRESH_TOKEN_TTL_MS ?? String(180 * 86_400_000), 10);
+const REFRESH_STORE_PATH = process.env.REFRESH_STORE_PATH ?? '/app/profile/oauth-refresh-tokens.json';
+
+function loadRefreshTokens(): Map<string, number> {
+  const m = new Map<string, number>();
+  try {
+    if (existsSync(REFRESH_STORE_PATH)) {
+      const raw = JSON.parse(readFileSync(REFRESH_STORE_PATH, 'utf8')) as Record<string, number>;
+      const now = Date.now();
+      for (const [t, exp] of Object.entries(raw)) if (exp > now) m.set(t, exp);
+      process.stderr.write(`[oauth] loaded ${m.size} refresh token(s) from disk\n`);
+    }
+  } catch (err) {
+    process.stderr.write(`[oauth] failed to load refresh tokens: ${err}\n`);
+  }
+  return m;
+}
+const refreshTokens = loadRefreshTokens();
+
+function persistRefreshTokens(): void {
+  try {
+    mkdirSync(dirname(REFRESH_STORE_PATH), { recursive: true });
+    const now = Date.now();
+    const obj: Record<string, number> = {};
+    for (const [t, exp] of refreshTokens.entries()) if (exp > now) obj[t] = exp;
+    writeFileSync(REFRESH_STORE_PATH, JSON.stringify(obj), 'utf8');
+  } catch (err) {
+    process.stderr.write(`[oauth] failed to persist refresh tokens: ${err}\n`);
+  }
+}
+
 function generateToken(): string {
   return randomBytes(32).toString('hex');
 }
@@ -572,6 +608,7 @@ async function startHttp(): Promise<void> {
       if (Date.now() > expiresAt) {
         accessTokens.delete(token);
         persistAccessTokens(); // after delete
+        res.set('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Token expired"');
         res.status(401).json({ error: 'invalid_token', error_description: 'Token expired' });
         return;
       }
@@ -590,6 +627,22 @@ async function startHttp(): Promise<void> {
 
   // Session registry: sessionId → transport
   const sessions = new Map<string, StreamableHTTPServerTransport>();
+  const sessionLastSeen = new Map<string, number>();
+  const SESSION_IDLE_MS = parseInt(process.env.SESSION_IDLE_MS ?? String(30 * 60_000), 10);
+  setInterval(() => {
+    const now = Date.now();
+    for (const [id, t] of sessions.entries()) {
+      const last = sessionLastSeen.get(id) ?? 0;
+      if (now - last > SESSION_IDLE_MS) {
+        process.stderr.write(`[session] closing idle session ${id}\n`);
+        sessions.delete(id);
+        sessionLastSeen.delete(id);
+        sessionChains.delete(id);
+        void browserManager.closeSession(id);
+        t.close().catch(() => {});
+      }
+    }
+  }, 60_000).unref();
 
   // ── OAuth discovery ─────────────────────────────────────────────────────────
   app.get('/.well-known/oauth-authorization-server', (_req, res) => {
@@ -599,7 +652,7 @@ async function startHttp(): Promise<void> {
       token_endpoint: `${issuer}/oauth/token`,
       response_types_supported: ['code'],
       code_challenge_methods_supported: ['S256'],
-      grant_types_supported: ['authorization_code'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
       token_endpoint_auth_methods_supported: ['client_secret_post'],
     });
   });
@@ -659,12 +712,36 @@ async function startHttp(): Promise<void> {
       res.status(500).json({ error: 'server_error', error_description: 'OAuth not configured' });
       return;
     }
-    if (grant_type !== 'authorization_code') {
+    if (grant_type !== 'authorization_code' && grant_type !== 'refresh_token') {
       res.status(400).json({ error: 'unsupported_grant_type' });
       return;
     }
     if (client_id !== oauthClientId || client_secret !== oauthClientSecret) {
       res.status(401).json({ error: 'invalid_client' });
+      return;
+    }
+
+    if (grant_type === 'refresh_token') {
+      const rt = (req.body as Record<string, string>).refresh_token;
+      const rtExp = rt ? refreshTokens.get(rt) : undefined;
+      if (!rt || rtExp === undefined || Date.now() > rtExp) {
+        if (rt) { refreshTokens.delete(rt); persistRefreshTokens(); }
+        res.status(400).json({ error: 'invalid_grant', error_description: 'Unknown or expired refresh token' });
+        return;
+      }
+      // sliding expiry on the refresh token
+      refreshTokens.set(rt, Date.now() + REFRESH_TOKEN_TTL_MS);
+      persistRefreshTokens();
+      const newAccess = generateToken();
+      accessTokens.set(newAccess, Date.now() + ACCESS_TOKEN_TTL_MS);
+      persistAccessTokens();
+      process.stderr.write(`[oauth] access token refreshed\n`);
+      res.json({
+        access_token: newAccess,
+        token_type: 'Bearer',
+        expires_in: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
+        refresh_token: rt,
+      });
       return;
     }
 
@@ -690,13 +767,18 @@ async function startHttp(): Promise<void> {
     authCodes.delete(code);
 
     const accessToken = generateToken();
-    accessTokens.set(accessToken, Date.now() + 86_400_000); // 24 h
+    accessTokens.set(accessToken, Date.now() + ACCESS_TOKEN_TTL_MS);
     persistAccessTokens(); // after set
+    const refreshToken = generateToken();
+    refreshTokens.set(refreshToken, Date.now() + REFRESH_TOKEN_TTL_MS);
+    persistRefreshTokens();
+    process.stderr.write(`[oauth] new authorization: access + refresh token issued\n`);
 
     res.json({
       access_token: accessToken,
       token_type: 'Bearer',
-      expires_in: 86400,
+      expires_in: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
+      refresh_token: refreshToken,
     });
   });
 
@@ -712,8 +794,20 @@ async function startHttp(): Promise<void> {
 
       // Reuse existing session
       if (sessionId && sessions.has(sessionId)) {
+        sessionLastSeen.set(sessionId, Date.now());
         const transport = sessions.get(sessionId)!;
         await transport.handleRequest(req, res, req.body);
+        return;
+      }
+
+      // Unknown/expired session id: spec says 404, which makes the client
+      // transparently start a new session (400 made it surface an error).
+      if (sessionId && !(req.method === 'POST' && req.body && req.body.method === 'initialize')) {
+        res.status(404).json({
+          jsonrpc: '2.0',
+          error: { code: -32001, message: 'Session not found' },
+          id: null,
+        });
         return;
       }
 
@@ -731,9 +825,11 @@ async function startHttp(): Promise<void> {
         onsessioninitialized: (id) => {
           storedId = id;
           sessions.set(id, transport);
+          sessionLastSeen.set(id, Date.now());
           transport.onclose = () => {
             if (storedId) {
               sessions.delete(storedId);
+              sessionLastSeen.delete(storedId);
               sessionChains.delete(storedId);
               void browserManager.closeSession(storedId);
             }
