@@ -45,6 +45,16 @@
       <div id="async-slot"></div>
     </fieldset>
 
+    <!-- File upload: a visible input, and a hidden input behind a styled label -->
+    <fieldset>
+      <legend>Upload</legend>
+      <input id="upload-input" type="file" />
+      <span id="upload-result"></span><br />
+      <label id="upload-label" for="upload-hidden">Choisir un fichier</label>
+      <input id="upload-hidden" type="file" style="display:none" />
+      <span id="upload-hidden-result"></span>
+    </fieldset>
+
     <!-- An iframe with a field -->
     <fieldset>
       <legend>Iframe</legend>
@@ -58,6 +68,15 @@
     </fieldset>
 
     <script>
+      // Echo uploaded file name + content so tests can verify the payload.
+      for (const [inputId, outId] of [['upload-input','upload-result'],['upload-hidden','upload-hidden-result']]) {
+        document.getElementById(inputId).addEventListener('change', async (e) => {
+          const f = e.target.files[0];
+          const text = f ? await f.text() : '';
+          document.getElementById(outId).textContent = f ? `${f.name}|${f.size}|${text}` : '';
+        });
+      }
+
       // Async button appears after 800ms.
       setTimeout(() => {
         const btn = document.createElement('button');

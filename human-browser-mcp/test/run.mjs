@@ -9,11 +9,20 @@ process.env.BROWSER_TIMEOUT = process.env.BROWSER_TIMEOUT ?? '15000';
 
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { createServer } from 'node:http';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+
+// Depot partage isole pour le test (evite de toucher /root/Downloads/imap-attachments).
+const sharedRoot = mkdtempSync(join(tmpdir(), 'hb-upload-'));
+process.env.UPLOAD_ATTACHMENTS_DIR = sharedRoot;
+process.env.UPLOAD_SHARED_DIR = join(sharedRoot, 'uploads');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureUrl = 'file://' + join(here, 'fixture.html');
 
 const actions = await import('../dist/actions.js');
+const { browserUploadFile } = await import('../dist/upload.js');
 const { browserManager } = await import('../dist/browser.js');
 
 let pass = 0;
@@ -128,12 +137,54 @@ try {
   const shadowType = json(await actions.browserClearAndType({ selector: '#shadow-input', text: 'shadow-val' }));
   ok('shadow type ok', shadowType.ok === true, JSON.stringify(shadowType));
   ok('shadow input received value', (await readShadowValue()) === 'shadow-val');
+  // ── T6: upload_file (base64 / path / url / label-filechooser / errors) ────
+  async function readText(sel) {
+    const page = await browserManager.getPage();
+    return page.textContent(sel);
+  }
+  const up1 = json(await browserUploadFile({ selector: '#upload-input', filename: 'hello.txt', content_base64: Buffer.from('bonjour').toString('base64') }));
+  ok('upload base64 ok', up1.ok === true && up1.uploaded?.via === 'setInputFiles', JSON.stringify(up1));
+  ok('upload base64 input.files name', Array.isArray(up1.input_files) && up1.input_files[0] === 'hello.txt', JSON.stringify(up1.input_files));
+  await new Promise((r) => setTimeout(r, 300));
+  ok('upload base64 page read content', (await readText('#upload-result')) === 'hello.txt|7|bonjour', await readText('#upload-result'));
+
+  writeFileSync(join(process.env.UPLOAD_SHARED_DIR, 'deja-la.txt'), 'depuis le depot');
+  const up2 = json(await browserUploadFile({ selector: '#upload-input', path: 'deja-la.txt' }));
+  ok('upload path ok', up2.ok === true && up2.uploaded?.source === 'path' && up2.uploaded?.filename === 'deja-la.txt', JSON.stringify(up2));
+  await new Promise((r) => setTimeout(r, 300));
+  ok('upload path page read content', (await readText('#upload-result')) === 'deja-la.txt|15|depuis le depot', await readText('#upload-result'));
+
+  const srv = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/pdf', 'content-disposition': 'attachment; filename="facture.pdf"' });
+    res.end('%PDF-fake');
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  const up3 = json(await browserUploadFile({ selector: '#upload-input', url: `http://127.0.0.1:${port}/dl` }));
+  ok('upload url ok (server-side download)', up3.ok === true && up3.uploaded?.source === 'url' && up3.uploaded?.filename === 'facture.pdf', JSON.stringify(up3));
+  await new Promise((r) => setTimeout(r, 300));
+  ok('upload url page read content', (await readText('#upload-result')) === 'facture.pdf|9|%PDF-fake', await readText('#upload-result'));
+  srv.close();
+
+  const up4 = json(await browserUploadFile({ selector: '#upload-hidden', filename: 'cache.txt', content_base64: Buffer.from('x').toString('base64') }));
+  ok('upload on hidden input ok', up4.ok === true && up4.input_files?.[0] === 'cache.txt', JSON.stringify(up4));
+
+  const up5 = json(await browserUploadFile({ selector: '#upload-label', filename: 'via-label.txt', content_base64: Buffer.from('yz').toString('base64') }));
+  ok('upload via label (filechooser) ok', up5.ok === true && up5.uploaded?.via === 'filechooser' && up5.input_files?.[0] === 'via-label.txt', JSON.stringify(up5));
+
+  const upErr1 = json(await browserUploadFile({ selector: '#upload-input' }));
+  ok('upload without source -> INVALID_INPUT', upErr1.ok === false && upErr1.error.code === 'INVALID_INPUT', JSON.stringify(upErr1));
+  const upErr2 = json(await browserUploadFile({ selector: '#upload-input', path: '../../etc/passwd' }));
+  ok('upload path traversal refused', upErr2.ok === false && (upErr2.error.code === 'INVALID_INPUT' || upErr2.error.code === 'NOT_FOUND'), JSON.stringify(upErr2));
+  const upErr3 = json(await browserUploadFile({ selector: '#email', content_base64: 'YQ==' }));
+  ok('upload on non-file element -> INVALID_TARGET', upErr3.ok === false && upErr3.error.code === 'INVALID_TARGET', JSON.stringify(upErr3));
 } catch (err) {
   fail++;
   failures.push('UNCAUGHT: ' + (err?.stack || err));
   console.log('  FAIL  uncaught exception\n', err);
 } finally {
   await browserManager.close();
+  try { rmSync(sharedRoot, { recursive: true, force: true }); } catch {}
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

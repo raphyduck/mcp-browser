@@ -27,6 +27,7 @@ services:
       - RELAY_PUBLIC=${RELAY_PUBLIC:-}
     volumes:
       - browser_profile:/app/profile
+      - /home/raph/docker_images/_shared/imap-attachments:/root/Downloads/imap-attachments:rw   # depot partage avec imapmcp (browser_upload_file)
     restart: unless-stopped
     shm_size: '2gb'
     networks:

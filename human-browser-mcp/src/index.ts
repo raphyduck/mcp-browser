@@ -37,6 +37,7 @@ import {
   browserSolveCloudflare,
 } from './actions.js';
 import { browserManager, sessionStore } from './browser.js';
+import { browserUploadFile } from './upload.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tool definitions
@@ -237,6 +238,26 @@ const TOOLS = [
     },
   },
   {
+    name: 'browser_upload_file',
+    description:
+      "Depose un fichier dans un <input type=\"file\"> de la page (ou clique un bouton/label qui ouvre le selecteur de fichier et l'intercepte). Le fichier est ecrit sur le serveur dans le depot partage avec l'Imap MCP (/root/Downloads/imap-attachments/uploads) puis remis au navigateur via setInputFiles. Source du fichier, EXACTEMENT une parmi : content_base64 (petits fichiers), url (le serveur telecharge lui-meme, pas de base64 a produire), path (fichier deja present dans le depot partage, ex. renvoye par imap_upload_file ou imap_download_attachment). Retourne le nom du fichier tel que vu par l'input.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector of the <input type="file"> (or of the button/label that opens the file chooser)' },
+        filename: { type: 'string', description: 'File name presented to the page (default: from url/Content-Disposition, or from path)' },
+        content_base64: { type: 'string', description: 'Base64 file content (small files only)' },
+        url: { type: 'string', description: 'http(s) URL to download server-side (max 25 MB by default)' },
+        path: { type: 'string', description: 'File name in /root/Downloads/imap-attachments/uploads, or absolute path under /root/Downloads/imap-attachments' },
+        frame: {
+          type: 'string',
+          description: 'Optional frame hint (name | url substring | numeric index) to target an iframe',
+        },
+      },
+      required: ['selector'],
+    },
+  },
+  {
     name: 'browser_hover',
     description: 'Move the mouse over an element with a realistic ghost-cursor path',
     inputSchema: {
@@ -403,6 +424,7 @@ const ACTIONS: Record<string, ActionFn> = {
   browser_type: browserType,
   browser_clear_and_type: browserClearAndType,
   browser_select: browserSelect,
+  browser_upload_file: browserUploadFile,
   browser_hover: browserHover,
   browser_scroll: browserScroll,
   browser_press_key: browserPressKey,

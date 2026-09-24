@@ -6,6 +6,9 @@ export type ErrorCode =
   | 'DETACHED'
   | 'TIMEOUT'
   | 'FRAME_NOT_FOUND'
+  | 'INVALID_INPUT'
+  | 'INVALID_TARGET'
+  | 'DOWNLOAD_FAILED'
   | 'UNKNOWN';
 
 /** Error carrying a stable code + structured details for the MCP response. */
