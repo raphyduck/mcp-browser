@@ -18,3 +18,6 @@ profile/
 *.orig-*
 *.bak.*
 __pycache__/
+
+# Extension uBOL extraite localement (46 Mo, installee par policy depuis le store, pas par le build)
+ubol/

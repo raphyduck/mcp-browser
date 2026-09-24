@@ -46,6 +46,12 @@ ENV MCP_TRANSPORT=stdio
 ENV MCP_PORT=3000
 ENV MCP_AUTH_TOKEN=
 
+# Policies entreprise Chrome : seule voie encore fonctionnelle en Chrome >=150 pour
+# installer une extension (--load-extension est devenu inoperant). Installe uBlock
+# Origin Lite (MV3) et coupe la telemetrie de fond a la source.
+RUN mkdir -p /etc/opt/chrome/policies/managed
+COPY chrome-policy-ubol.json /etc/opt/chrome/policies/managed/ubol.json
+
 EXPOSE 3000
 
 CMD ["/app/entrypoint.sh"]

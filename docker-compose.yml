@@ -25,6 +25,7 @@ services:
       - PROXY_USERNAME=${PROXY_USERNAME:-}
       - PROXY_PASSWORD=${PROXY_PASSWORD:-}
       - RELAY_PUBLIC=${RELAY_PUBLIC:-}
+      - PAGE_IDLE_MS=${PAGE_IDLE_MS:-900000}
     volumes:
       - browser_profile:/app/profile
       - /home/raph/docker_images/_shared/imap-attachments:/root/Downloads/imap-attachments:rw   # depot partage avec imapmcp (browser_upload_file)

@@ -55,6 +55,30 @@ const INIT_SCRIPT = `
 })();
 `;
 
+// Telemetrie Chrome : ces hotes n'ont aucun besoin d'une IP residentielle et
+// representaient ~79% des requetes du relais (canal push GCM, Safe Browsing,
+// mises a jour de composants). Les sortir du proxy supprime la conso au repos.
+// NB: accounts.google.com et www.google.com sont VOLONTAIREMENT absents (usage reel).
+const PROXY_BYPASS_DEFAULT = [
+  'mtalk.google.com',
+  'clients1.google.com',
+  'clients2.google.com',
+  'android.clients.google.com',
+  'update.googleapis.com',
+  'safebrowsing.googleapis.com',
+  'safebrowsingohttpgateway.googleapis.com',
+  'content-autofill.googleapis.com',
+  'optimizationguide-pa.googleapis.com',
+  'clientservices.googleapis.com',
+  '.gvt1.com',
+  '.gvt2.com',
+].join(',');
+
+// uBlock Origin Lite (MV3) est installe par POLICY entreprise
+// (/etc/opt/chrome/policies/managed/ubol.json), pas par --load-extension :
+// Chrome >=150 ignore ce commutateur. Ne bloque que les requetes des pages,
+// jamais le trafic interne de Chrome (cf. PROXY_BYPASS_DEFAULT).
+
 class BrowserManager {
   private static instance: BrowserManager;
   private context: BrowserContext | null = null;
@@ -152,11 +176,16 @@ class BrowserManager {
     // Proxy residentiel (Webshare) : lu depuis l'env, absent => pas de proxy.
     const proxyServer = process.env.PROXY_SERVER;
     const proxyOpt = proxyServer
-      ? { proxy: { server: proxyServer, username: process.env.PROXY_USERNAME, password: process.env.PROXY_PASSWORD } }
+      ? { proxy: { server: proxyServer, username: process.env.PROXY_USERNAME, password: process.env.PROXY_PASSWORD, bypass: process.env.PROXY_BYPASS ?? PROXY_BYPASS_DEFAULT } }
       : {};
 
     this.context = await (chromium as any).launchPersistentContext(profileDir, {
       ...proxyOpt,
+      // Playwright passe --disable-background-networking par defaut, ce qui desactive
+      // aussi l'updater d'extensions : une extension force-installee par policy n'est
+      // alors JAMAIS telechargee. Le trafic de fond est deja coupe par les policies
+      // (metrics, safebrowsing, component updates, signin) et par PROXY_BYPASS_DEFAULT.
+      ignoreDefaultArgs: ['--disable-background-networking'],
       channel: 'chrome',
       headless,
       slowMo,
@@ -177,6 +206,13 @@ class BrowserManager {
         '--use-gl=angle',
         '--use-angle=swiftshader',
         '--enable-unsafe-swiftshader',
+        // Trafic de fond de Chrome : coupe a la source ce que le bypass ne fait que devier.
+        '--disable-component-update',
+        '--disable-domain-reliability',
+        '--disable-sync',
+        '--disable-breakpad',
+        '--no-pings',
+        '--disable-client-side-phishing-detection',
       ],
     });
 

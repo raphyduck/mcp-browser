@@ -1,0 +1,20 @@
+{
+  "ExtensionInstallForcelist": [
+    "ddkjiahejlhfcafbddmgiahcphecmpfh;https://clients2.google.com/service/update2/crx"
+  ],
+  "ExtensionInstallSources": ["https://clients2.google.com/*"],
+  "MetricsReportingEnabled": false,
+  "UrlKeyedAnonymizedDataCollectionEnabled": false,
+  "SafeBrowsingProtectionLevel": 0,
+  "SafeBrowsingExtendedReportingEnabled": false,
+  "ComponentUpdatesEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "SearchSuggestEnabled": false,
+  "PasswordLeakDetectionEnabled": false,
+  "SpellcheckEnabled": false,
+  "PromotionalTabsEnabled": false,
+  "DefaultBrowserSettingEnabled": false,
+  "MediaRouterCastAllowAllIPs": false,
+  "DeviceMetricsReportingEnabled": false
+}
